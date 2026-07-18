@@ -3,21 +3,18 @@ const fs = require('fs');
 const http = require('http');
 
 // ================================
-// НАСТРОЙКИ
-// ================================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const DB_FILE = './credits.json';
 const DEFAULT_CREDITS = 0;
 const OWNER_USERNAME = 'felc0n';
 const LIMIT_PER_30MIN = 10000;
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 минут
-const CMD_COOLDOWN_MS = 30 * 1000;  // 30 секунд между командами
+const COOLDOWN_MS = 30 * 60 * 1000;
+const CMD_COOLDOWN_MS = 30 * 1000;
 // ================================
 
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-// --- База данных ---
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) return { credits: {}, limits: {}, cmdCooldown: {} };
   try {
@@ -35,7 +32,6 @@ function saveDB(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-// --- Антиспам ---
 function checkCmdCooldown(userId, isOwner) {
   if (isOwner) return { allowed: true };
   const db = loadDB();
@@ -49,19 +45,15 @@ function checkCmdCooldown(userId, isOwner) {
   return { allowed: true };
 }
 
-// --- Лимит 10000 за 30 минут ---
 function checkAndUseLimit(giverId, absAmount) {
   const db = loadDB();
   const now = Date.now();
   const entry = db.limits[giverId];
 
-  // Если окно истекло или первый раз — сбрасываем
   if (!entry || now - entry.startTime >= COOLDOWN_MS) {
-    // Проверяем что сумма не превышает лимит
     if (absAmount > LIMIT_PER_30MIN) {
       return { allowed: false, reason: 'exceed', remaining: LIMIT_PER_30MIN, resetIn: COOLDOWN_MS };
     }
-    // Записываем новое окно
     db.limits[giverId] = { startTime: now, used: absAmount };
     saveDB(db);
     return { allowed: true, remaining: LIMIT_PER_30MIN - absAmount };
@@ -74,18 +66,15 @@ function checkAndUseLimit(giverId, absAmount) {
   if (used >= LIMIT_PER_30MIN) {
     return { allowed: false, reason: 'exhausted', remaining: 0, resetIn };
   }
-
   if (absAmount > remaining) {
     return { allowed: false, reason: 'exceed', remaining, resetIn };
   }
 
-  // Всё ок — списываем
   db.limits[giverId].used += absAmount;
   saveDB(db);
   return { allowed: true, remaining: remaining - absAmount };
 }
 
-// --- Кредиты ---
 function getCredits(userId) {
   const db = loadDB();
   if (db.credits[userId] === undefined) db.credits[userId] = DEFAULT_CREDITS;
@@ -100,36 +89,38 @@ function addCredits(userId, amount) {
   return db.credits[userId];
 }
 
-// --- Вердикт партии ---
+function getRating(credits) {
+  if (credits >= 20000) return { label: '🏆 Образцовый гражданин', color: 0xFFD700, enemy: false };
+  if (credits >= 10000) return { label: '⭐ Отличник',             color: 0x00FF88, enemy: false };
+  if (credits >= 1000)  return { label: '✅ Нормальный',           color: 0x00BFFF, enemy: false };
+  if (credits >= 0)     return { label: '⚠️ Под наблюдением',     color: 0xFFA500, enemy: false };
+  if (credits >= -5000) return { label: '🚨 Неблагонадёжный',     color: 0xFF4500, enemy: false };
+  return                       { label: '💀 Враг народа',          color: 0xFF0000, enemy: true  };
+}
+
 function getPartyVerdict(credits) {
   if (credits > 100) {
     return {
       title: '🎉 Партия гордиться тобой!',
       message: '🍚 Партия дарить тебе **миска рис**\n🐱 Партия дарить тебе **кошка жена**\n\nТы достойный гражданин! Продолжать служить Партии!',
       color: 0xFFD700,
+      enemy: false,
     };
   } else if (credits >= 0) {
     return {
       title: '👍 Хорошо, но можно лучше',
       message: 'Партия видеть твои старания...\nНо Партия ожидать большего от тебя!\n\nПродолжать работать усердно!',
       color: 0x00BFFF,
+      enemy: false,
     };
   } else {
     return {
       title: '😤 Ай ай ай! Партия не гордиться тобой!',
       message: '🍚 Партия **забирать миска рис**\n🐱 Партия **забирать кошка жена**\n\nПозор! Исправляться немедленно!',
       color: 0xFF0000,
+      enemy: true,
     };
   }
-}
-
-function getRating(credits) {
-  if (credits >= 20000) return { label: '🏆 Образцовый гражданин', color: 0xFFD700 };
-  if (credits >= 10000) return { label: '⭐ Отличник',             color: 0x00FF88 };
-  if (credits >= 1000)  return { label: '✅ Нормальный',           color: 0x00BFFF };
-  if (credits >= 0)     return { label: '⚠️ Под наблюдением',     color: 0xFFA500 };
-  if (credits >= -5000) return { label: '🚨 Неблагонадёжный',     color: 0xFF4500 };
-  return                       { label: '💀 Враг народа',          color: 0xFF0000 };
 }
 
 function formatTime(ms) {
@@ -139,7 +130,6 @@ function formatTime(ms) {
   return `${secs} сек.`;
 }
 
-// --- Регистрация команд ---
 async function registerCommands() {
   const commands = [
     new SlashCommandBuilder()
@@ -168,7 +158,6 @@ async function registerCommands() {
   console.log('✅ Команды зарегистрированы!');
 }
 
-// --- Бот ---
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', () => {
@@ -180,7 +169,6 @@ client.on('interactionCreate', async interaction => {
 
   const isOwner = interaction.user.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
 
-  // --- Антиспам ---
   const spam = checkCmdCooldown(interaction.user.id, isOwner);
   if (!spam.allowed) {
     return interaction.reply({
@@ -199,25 +187,18 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '❌ Нельзя менять кредиты ботам!', ephemeral: true });
     }
 
-    // Нельзя начислять себе (кроме владельца)
     if (targetUser.id === giver.id && !isOwner) {
-      return interaction.reply({
-        content: '❌ Нельзя начислять кредиты самому себе!',
-        ephemeral: true
-      });
+      return interaction.reply({ content: '❌ Нельзя начислять кредиты самому себе!', ephemeral: true });
     }
 
     const absAmount = Math.abs(amount);
-
     if (absAmount === 0) {
       return interaction.reply({ content: '❌ Сумма не может быть 0!', ephemeral: true });
     }
 
-    // Лимит только для не-владельца
     let remainingAfter = null;
     if (!isOwner) {
       const limitCheck = checkAndUseLimit(giver.id, absAmount);
-
       if (!limitCheck.allowed) {
         if (limitCheck.reason === 'exhausted') {
           return interaction.reply({
@@ -232,15 +213,13 @@ client.on('interactionCreate', async interaction => {
           });
         }
       }
-
       remainingAfter = limitCheck.remaining;
     }
 
     const newTotal = addCredits(targetUser.id, amount);
-    const { label, color } = getRating(newTotal);
+    const { label, color, enemy } = getRating(newTotal);
     const sign = amount >= 0 ? '+' : '';
     const emoji = amount >= 0 ? '📈' : '📉';
-
     const footerText = isOwner
       ? `Изменил: ${giver.username} 👑`
       : `Изменил: ${giver.username} | Осталось лимита: ${remainingAfter} / ${LIMIT_PER_30MIN}`;
@@ -259,6 +238,13 @@ client.on('interactionCreate', async interaction => {
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
+
+    // Если враг народа — шлём 3 доп. сообщения
+    if (enemy) {
+      await interaction.channel.send(`# 💀 ВРАГ НАРОДА`);
+      await interaction.channel.send(`# 🐱 ОТОБРАТЬ КОШКА ЖЕНА`);
+      await interaction.channel.send(`# 🍚 НЕ ДАВАТЬ РИС`);
+    }
   }
 
   // ======= /socialstats =======
@@ -282,6 +268,13 @@ client.on('interactionCreate', async interaction => {
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
+
+    // Если враг народа — шлём 3 доп. сообщения
+    if (verdict.enemy) {
+      await interaction.channel.send(`# 💀 ВРАГ НАРОДА`);
+      await interaction.channel.send(`# 🐱 ОТОБРАТЬ КОШКА ЖЕНА`);
+      await interaction.channel.send(`# 🍚 НЕ ДАВАТЬ РИС`);
+    }
   }
 
   // ======= /socialleaderboard =======
@@ -313,5 +306,4 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// --- Старт ---
 registerCommands().then(() => client.login(TOKEN));
