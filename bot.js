@@ -5,27 +5,28 @@ const http = require('http');
 // ================================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = 'ВСТАВЬ_СЮДА_ID_СВОЕГО_СЕРВЕРА'; // <-- Для моментального обновления команд в Discord
 const DB_FILE = './credits.json';
-const DEFAULT_CREDITS = 0;
-const OWNER_USERNAME = 'felc0n'; //[cite: 2]
-const OWNER_ID = '1528109131704176822'; // Твой личный Discord User ID[cite: 2]
+const DEFAULT_CREDITS = 10000; 
+const OWNER_USERNAME = 'felc0n';
+const OWNER_ID = '1528109131704176822'; 
 const LIMIT_PER_30MIN = 10000;
 const COOLDOWN_MS = 30 * 60 * 1000;
-const CMD_COOLDOWN_MS = 30 * 1000;
+const CREDIT_CMD_COOLDOWN_MS = 30 * 1000; // 30 секунд лимита для /socialcredit
 // ================================
 
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 function loadDB() {
-  if (!fs.existsSync(DB_FILE)) return { credits: {}, limits: {}, cmdCooldown: {} };
+  if (!fs.existsSync(DB_FILE)) return { credits: {}, limits: {}, creditCooldown: {} };
   try {
     const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
     if (!data.credits) data.credits = {};
     if (!data.limits) data.limits = {};
-    if (!data.cmdCooldown) data.cmdCooldown = {};
+    if (!data.creditCooldown) data.creditCooldown = {};
     return data;
   } catch {
-    return { credits: {}, limits: {}, cmdCooldown: {} };
+    return { credits: {}, limits: {}, creditCooldown: {} };
   }
 }
 
@@ -33,15 +34,18 @@ function saveDB(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-function checkCmdCooldown(userId, isOwner) {
+// Проверка кулдауна именно для /socialcredit
+function checkCreditCooldown(userId, isOwner) {
   if (isOwner) return { allowed: true };
   const db = loadDB();
   const now = Date.now();
-  const last = db.cmdCooldown[userId] || 0;
-  if (now - last < CMD_COOLDOWN_MS) {
-    return { allowed: false, waitMs: CMD_COOLDOWN_MS - (now - last) };
+  const last = db.creditCooldown[userId] || 0;
+  
+  if (now - last < CREDIT_CMD_COOLDOWN_MS) {
+    return { allowed: false, waitMs: CREDIT_CMD_COOLDOWN_MS - (now - last) };
   }
-  db.cmdCooldown[userId] = now;
+  
+  db.creditCooldown[userId] = now;
   saveDB(db);
   return { allowed: true };
 }
@@ -90,7 +94,6 @@ function addCredits(userId, amount) {
   return db.credits[userId];
 }
 
-// --- Настройка мемных статусов для эмбедов ---
 function getRating(credits) {
   if (credits >= 20000) return {
     label: '🏆 Образцовый гражданин',
@@ -143,9 +146,7 @@ function getPartyVerdict(credits) {
 }
 
 function formatTime(ms) {
-  const mins = Math.floor(ms / 60000);
-  const secs = Math.ceil((ms % 60000) / 1000);
-  if (mins > 0) return `${mins} мин. ${secs} сек.`;
+  const secs = Math.ceil(ms / 1000);
   return `${secs} сек.`;
 }
 
@@ -177,8 +178,15 @@ async function registerCommands() {
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   console.log('⏳ Регистрирую команды...');
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log('✅ Команды зарегистрированы!');
+  
+  // Если ID сервера указан, регистрируем локально (обновление мгновенное)
+  if (GUILD_ID && GUILD_ID !== 'ВСТАВЬ_СЮДА_ID_СВОЕГО_СЕРВЕРА') {
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+    console.log('✅ Команды зарегистрированы локально для сервера!');
+  } else {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log('✅ Команды зарегистрированы глобально! (Может потребоваться время для обновления)');
+  }
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -190,19 +198,19 @@ client.once('ready', () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  // Строгая проверка прав: по ID или юзернейму
   const isOwner = interaction.user.id === OWNER_ID || interaction.user.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
-
-  const spam = checkCmdCooldown(interaction.user.id, isOwner);
-  if (!spam.allowed) {
-    return interaction.reply({
-      content: `⏳ Подожди ещё **${formatTime(spam.waitMs)}** перед следующей командой!`,
-      ephemeral: true
-    });
-  }
 
   // ======= /socialcredit =======
   if (interaction.commandName === 'socialcredit') {
+    // Проверяем 30-секундный лимит между командами
+    const spam = checkCreditCooldown(interaction.user.id, isOwner);
+    if (!spam.allowed) {
+      return interaction.reply({
+        content: `⏳ Партия просит снизить темп! Подожди ещё **${formatTime(spam.waitMs)}** перед использованием /socialcredit!`,
+        ephemeral: true
+      });
+    }
+
     const targetUser = interaction.options.getUser('user');
     const amount = interaction.options.getInteger('amount');
     const giver = interaction.user;
@@ -225,12 +233,12 @@ client.on('interactionCreate', async interaction => {
       if (!limitCheck.allowed) {
         if (limitCheck.reason === 'exhausted') {
           return interaction.reply({
-            content: `⛔ Ты исчерпал лимит **10 000 кредитов** за 30 минут!\nПодожди ещё **${formatTime(limitCheck.resetIn)}**`,
+            content: `⛔ Ты исчерпал лимит **10 000 кредитов** за 30 минут!\nПодожди еще немного.`,
             ephemeral: true
           });
         }
         return interaction.reply({
-          content: `⛔ Превышение лимита!\nМожно перевести максимум ещё **${limitCheck.remaining}** кредитов.\n${limitCheck.resetIn > 0 ? `Лимит сбросится через **${formatTime(limitCheck.resetIn)}**` : ''}`,
+          content: `⛔ Превышение лимита!\nМожно перевести максимум ещё **${limitCheck.remaining}** кредитов.`,
           ephemeral: true
         });
       }
@@ -328,19 +336,18 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ embeds: [embed] });
   }
 
-  // ======= /resetall (ОБНУЛЕНИЕ ДО 10000 КОМАНДОЙ) =======
+  // ======= /resetall =======
   else if (interaction.commandName === 'resetall') {
     if (!isOwner) {
       return interaction.reply({ content: '❌ Только Верховный Лидер имеет право обнулять историю!', ephemeral: true });
     }
 
     const db = loadDB();
-    // Возвращаем баланс всех участников строго к 10000
     for (const userId in db.credits) {
       db.credits[userId] = 10000;
     }
     db.limits = {};
-    db.cmdCooldown = {};
+    db.creditCooldown = {}; // Очищаем кулдауны при сбросе
     saveDB(db);
 
     const embed = new EmbedBuilder()
