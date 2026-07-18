@@ -7,7 +7,8 @@ const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const DB_FILE = './credits.json';
 const DEFAULT_CREDITS = 0;
-const OWNER_USERNAME = 'felc0n';
+const OWNER_USERNAME = 'felc0n'; //[cite: 2]
+const OWNER_ID = '1528109131704176822'; // Твой личный Discord User ID[cite: 2]
 const LIMIT_PER_30MIN = 10000;
 const COOLDOWN_MS = 30 * 60 * 1000;
 const CMD_COOLDOWN_MS = 30 * 1000;
@@ -89,21 +90,39 @@ function addCredits(userId, amount) {
   return db.credits[userId];
 }
 
+// --- Настройка мемных статусов для эмбедов ---
 function getRating(credits) {
-  if (credits >= 20000) return { label: '🏆 Образцовый гражданин', color: 0xFFD700, enemy: false };
-  if (credits >= 10000) return { label: '⭐ Отличник',             color: 0x00FF88, enemy: false };
-  if (credits >= 1000)  return { label: '✅ Нормальный',           color: 0x00BFFF, enemy: false };
-  if (credits >= 0)     return { label: '⚠️ Под наблюдением',     color: 0xFFA500, enemy: false };
-  if (credits >= -5000) return { label: '🚨 Неблагонадёжный',     color: 0xFF4500, enemy: false };
-  return                       { label: '💀 Враг народа',          color: 0xFF0000, enemy: true  };
+  if (credits >= 20000) return {
+    label: '🏆 Образцовый гражданин',
+    color: 0xFFD700,
+    enemy: false,
+    legend: '🐱 получать **кошка жена**\n🍚 получать **миска рис**\n\n**Партия гордиться тобой!**'
+  };
+  if (credits >= 10000) return { label: '⭐ Отличник',         color: 0x00FF88, enemy: false, legend: null };
+  if (credits >= 1000)  return { label: '✅ Нормальный',       color: 0x00BFFF, enemy: false, legend: null };
+  if (credits >= 0)     return { label: '⚠️ Под наблюдением', color: 0xFFA500, enemy: false, legend: null };
+  if (credits >= -5000) return { label: '🚨 Неблагонадёжный', color: 0xFF4500, enemy: false, legend: null };
+  return {
+    label: '💀 Враг народа',
+    color: 0xFF0000,
+    enemy: true,
+    legend: '🐱 **отобрать кошка жена**\n🍚 **не давать миска рис**\n\n**Партия не гордиться тобой!**'
+  };
 }
 
 function getPartyVerdict(credits) {
-  if (credits > 100) {
+  if (credits >= 20000) {
     return {
-      title: '🎉 Партия гордиться тобой!',
-      message: '🍚 Партия дарить тебе **миска рис**\n🐱 Партия дарить тебе **кошка жена**\n\nТы достойный гражданин! Продолжать служить Партии!',
+      title: '🏆 Образцовый гражданин',
+      message: '🐱 получать **кошка жена**\n🍚 получать **миска рис**\n\n**Партия гордиться тобой!**',
       color: 0xFFD700,
+      enemy: false,
+    };
+  } else if (credits > 100) {
+    return {
+      title: '🎉 Партия гордится тобой!',
+      message: '🍚 Партия дарить тебе **миска рис**\n🐱 Партия дарить тебе **кошка жена**\n\nТы достойный гражданин! Продолжать служить Партии!',
+      color: 0x00FF88,
       enemy: false,
     };
   } else if (credits >= 0) {
@@ -115,7 +134,7 @@ function getPartyVerdict(credits) {
     };
   } else {
     return {
-      title: '😤 Ай ай ай! Партия не гордиться тобой!',
+      title: '😤 Ай ай ай! Партия не гордится тобой!',
       message: '🍚 Партия **забирать миска рис**\n🐱 Партия **забирать кошка жена**\n\nПозор! Исправляться немедленно!',
       color: 0xFF0000,
       enemy: true,
@@ -150,6 +169,10 @@ async function registerCommands() {
       .setName('socialleaderboard')
       .setDescription('Топ-10 по социальным кредитам на сервере'),
 
+    new SlashCommandBuilder()
+      .setName('resetall')
+      .setDescription('⚠️ Обнулить очки всех пользователей до 10000 (Только для Создателя)'),
+
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -167,7 +190,8 @@ client.once('ready', () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const isOwner = interaction.user.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
+  // Строгая проверка прав: по ID или юзернейму
+  const isOwner = interaction.user.id === OWNER_ID || interaction.user.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
 
   const spam = checkCmdCooldown(interaction.user.id, isOwner);
   if (!spam.allowed) {
@@ -186,7 +210,6 @@ client.on('interactionCreate', async interaction => {
     if (targetUser.bot) {
       return interaction.reply({ content: '❌ Нельзя менять кредиты ботам!', ephemeral: true });
     }
-
     if (targetUser.id === giver.id && !isOwner) {
       return interaction.reply({ content: '❌ Нельзя начислять кредиты самому себе!', ephemeral: true });
     }
@@ -206,18 +229,16 @@ client.on('interactionCreate', async interaction => {
             ephemeral: true
           });
         }
-        if (limitCheck.reason === 'exceed') {
-          return interaction.reply({
-            content: `⛔ Превышение лимита!\nМожно перевести максимум ещё **${limitCheck.remaining}** кредитов.\n${limitCheck.resetIn > 0 ? `Лимит сбросится через **${formatTime(limitCheck.resetIn)}**` : ''}`,
-            ephemeral: true
-          });
-        }
+        return interaction.reply({
+          content: `⛔ Превышение лимита!\nМожно перевести максимум ещё **${limitCheck.remaining}** кредитов.\n${limitCheck.resetIn > 0 ? `Лимит сбросится через **${formatTime(limitCheck.resetIn)}**` : ''}`,
+          ephemeral: true
+        });
       }
       remainingAfter = limitCheck.remaining;
     }
 
     const newTotal = addCredits(targetUser.id, amount);
-    const { label, color, enemy } = getRating(newTotal);
+    const { label, color, enemy, legend } = getRating(newTotal);
     const sign = amount >= 0 ? '+' : '';
     const emoji = amount >= 0 ? '📈' : '📉';
     const footerText = isOwner
@@ -237,9 +258,12 @@ client.on('interactionCreate', async interaction => {
       .setFooter({ text: footerText })
       .setTimestamp();
 
+    if (legend) {
+      embed.addFields({ name: '📜 Решение Партии', value: legend, inline: false });
+    }
+
     await interaction.reply({ embeds: [embed] });
 
-    // Если враг народа — шлём 3 доп. сообщения
     if (enemy) {
       await interaction.channel.send(`# 💀 ВРАГ НАРОДА`);
       await interaction.channel.send(`# 🐱 ОТОБРАТЬ КОШКА ЖЕНА`);
@@ -269,7 +293,6 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.reply({ embeds: [embed] });
 
-    // Если враг народа — шлём 3 доп. сообщения
     if (verdict.enemy) {
       await interaction.channel.send(`# 💀 ВРАГ НАРОДА`);
       await interaction.channel.send(`# 🐱 ОТОБРАТЬ КОШКА ЖЕНА`);
@@ -300,6 +323,31 @@ client.on('interactionCreate', async interaction => {
       .setColor(0xFFD700)
       .setTitle('🏛 Таблица социальных кредитов')
       .setDescription(lines.join('\n'))
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ======= /resetall (ОБНУЛЕНИЕ ДО 10000 КОМАНДОЙ) =======
+  else if (interaction.commandName === 'resetall') {
+    if (!isOwner) {
+      return interaction.reply({ content: '❌ Только Верховный Лидер имеет право обнулять историю!', ephemeral: true });
+    }
+
+    const db = loadDB();
+    // Возвращаем баланс всех участников строго к 10000
+    for (const userId in db.credits) {
+      db.credits[userId] = 10000;
+    }
+    db.limits = {};
+    db.cmdCooldown = {};
+    saveDB(db);
+
+    const embed = new EmbedBuilder()
+      .setColor(0xFF0000)
+      .setTitle('🔄 Великое Обнуление Кредитов')
+      .setDescription('Партия обнулила прошлые проступки и достижения! Кредиты всех граждан возвращены к базовым **10 000**.')
+      .setFooter({ text: `Приказ утвердил: ${interaction.user.username} 👑` })
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
