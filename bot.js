@@ -8,21 +8,24 @@ const http = require('http');
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const DB_FILE = './credits.json';
-const DEFAULT_CREDITS = 0;          // все стартуют с 0 (сброс)
-const OWNER_USERNAME = 'felc0n';    // только этот юзер может начислять себе
-const LIMIT_PER_30MIN = 10000;      // макс сумма за 30 минут
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 минут в миллисекундах
-const CMD_COOLDOWN_MS = 5000;       // 5 секунд между командами (антиспам)
+const DEFAULT_CREDITS = 0;
+const OWNER_USERNAME = 'felc0n';
+const LIMIT_PER_30MIN = 10000;
+const COOLDOWN_MS = 30 * 60 * 1000; // 30 минут
+const CMD_COOLDOWN_MS = 30 * 1000;  // 30 секунд между командами
 // ================================
 
-// --- Веб-сервер чтобы Render не засыпал ---
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 // --- База данных ---
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) return { credits: {}, limits: {}, cmdCooldown: {} };
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (!data.credits) data.credits = {};
+    if (!data.limits) data.limits = {};
+    if (!data.cmdCooldown) data.cmdCooldown = {};
+    return data;
   } catch {
     return { credits: {}, limits: {}, cmdCooldown: {} };
   }
@@ -32,53 +35,10 @@ function saveDB(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-function getCredits(userId) {
+// --- Антиспам ---
+function checkCmdCooldown(userId, isOwner) {
+  if (isOwner) return { allowed: true };
   const db = loadDB();
-  if (!db.credits) db.credits = {};
-  if (db.credits[userId] === undefined) db.credits[userId] = DEFAULT_CREDITS;
-  return db.credits[userId];
-}
-
-// --- Проверка лимита 10000 за 30 минут ---
-// Возвращает { allowed: true/false, used: число, remaining: число, resetIn: мс }
-function checkLimit(giverId) {
-  const db = loadDB();
-  if (!db.limits) db.limits = {};
-  const now = Date.now();
-  const entry = db.limits[giverId];
-
-  if (!entry || now - entry.startTime >= COOLDOWN_MS) {
-    // Окно сбросилось или первый раз
-    return { allowed: true, used: 0, remaining: LIMIT_PER_30MIN, resetIn: 0, fresh: true };
-  }
-
-  return {
-    allowed: entry.used < LIMIT_PER_30MIN,
-    used: entry.used,
-    remaining: LIMIT_PER_30MIN - entry.used,
-    resetIn: COOLDOWN_MS - (now - entry.startTime),
-    fresh: false
-  };
-}
-
-function useLimit(giverId, amount) {
-  const db = loadDB();
-  if (!db.limits) db.limits = {};
-  const now = Date.now();
-  const entry = db.limits[giverId];
-
-  if (!entry || now - entry.startTime >= COOLDOWN_MS) {
-    db.limits[giverId] = { startTime: now, used: amount };
-  } else {
-    db.limits[giverId].used += amount;
-  }
-  saveDB(db);
-}
-
-// --- Антиспам для команд ---
-function checkCmdCooldown(userId) {
-  const db = loadDB();
-  if (!db.cmdCooldown) db.cmdCooldown = {};
   const now = Date.now();
   const last = db.cmdCooldown[userId] || 0;
   if (now - last < CMD_COOLDOWN_MS) {
@@ -89,10 +49,51 @@ function checkCmdCooldown(userId) {
   return { allowed: true };
 }
 
-// --- Добавить кредиты ---
+// --- Лимит 10000 за 30 минут ---
+function checkAndUseLimit(giverId, absAmount) {
+  const db = loadDB();
+  const now = Date.now();
+  const entry = db.limits[giverId];
+
+  // Если окно истекло или первый раз — сбрасываем
+  if (!entry || now - entry.startTime >= COOLDOWN_MS) {
+    // Проверяем что сумма не превышает лимит
+    if (absAmount > LIMIT_PER_30MIN) {
+      return { allowed: false, reason: 'exceed', remaining: LIMIT_PER_30MIN, resetIn: COOLDOWN_MS };
+    }
+    // Записываем новое окно
+    db.limits[giverId] = { startTime: now, used: absAmount };
+    saveDB(db);
+    return { allowed: true, remaining: LIMIT_PER_30MIN - absAmount };
+  }
+
+  const used = entry.used;
+  const remaining = LIMIT_PER_30MIN - used;
+  const resetIn = COOLDOWN_MS - (now - entry.startTime);
+
+  if (used >= LIMIT_PER_30MIN) {
+    return { allowed: false, reason: 'exhausted', remaining: 0, resetIn };
+  }
+
+  if (absAmount > remaining) {
+    return { allowed: false, reason: 'exceed', remaining, resetIn };
+  }
+
+  // Всё ок — списываем
+  db.limits[giverId].used += absAmount;
+  saveDB(db);
+  return { allowed: true, remaining: remaining - absAmount };
+}
+
+// --- Кредиты ---
+function getCredits(userId) {
+  const db = loadDB();
+  if (db.credits[userId] === undefined) db.credits[userId] = DEFAULT_CREDITS;
+  return db.credits[userId];
+}
+
 function addCredits(userId, amount) {
   const db = loadDB();
-  if (!db.credits) db.credits = {};
   if (db.credits[userId] === undefined) db.credits[userId] = DEFAULT_CREDITS;
   db.credits[userId] += amount;
   saveDB(db);
@@ -122,7 +123,6 @@ function getPartyVerdict(credits) {
   }
 }
 
-// --- Статус ---
 function getRating(credits) {
   if (credits >= 20000) return { label: '🏆 Образцовый гражданин', color: 0xFFD700 };
   if (credits >= 10000) return { label: '⭐ Отличник',             color: 0x00FF88 };
@@ -133,8 +133,10 @@ function getRating(credits) {
 }
 
 function formatTime(ms) {
-  const mins = Math.ceil(ms / 60000);
-  return `${mins} мин.`;
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.ceil((ms % 60000) / 1000);
+  if (mins > 0) return `${mins} мин. ${secs} сек.`;
+  return `${secs} сек.`;
 }
 
 // --- Регистрация команд ---
@@ -176,11 +178,13 @@ client.once('ready', () => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  const isOwner = interaction.user.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
+
   // --- Антиспам ---
-  const spam = checkCmdCooldown(interaction.user.id);
+  const spam = checkCmdCooldown(interaction.user.id, isOwner);
   if (!spam.allowed) {
     return interaction.reply({
-      content: `⏳ Не так быстро! Подожди ещё **${Math.ceil(spam.waitMs / 1000)} сек.**`,
+      content: `⏳ Подожди ещё **${formatTime(spam.waitMs)}** перед следующей командой!`,
       ephemeral: true
     });
   }
@@ -191,47 +195,45 @@ client.on('interactionCreate', async interaction => {
     const amount = interaction.options.getInteger('amount');
     const giver = interaction.user;
 
-    // Нельзя начислять себе (кроме владельца)
-    if (targetUser.id === giver.id) {
-      const isOwner = giver.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
-      if (!isOwner) {
-        return interaction.reply({
-          content: '❌ Нельзя начислять кредиты самому себе!',
-          ephemeral: true
-        });
-      }
-    }
-
     if (targetUser.bot) {
       return interaction.reply({ content: '❌ Нельзя менять кредиты ботам!', ephemeral: true });
     }
 
-    // Проверка суммы
+    // Нельзя начислять себе (кроме владельца)
+    if (targetUser.id === giver.id && !isOwner) {
+      return interaction.reply({
+        content: '❌ Нельзя начислять кредиты самому себе!',
+        ephemeral: true
+      });
+    }
+
     const absAmount = Math.abs(amount);
+
     if (absAmount === 0) {
       return interaction.reply({ content: '❌ Сумма не может быть 0!', ephemeral: true });
     }
 
-    // Проверка лимита (не применяем к владельцу)
-    const isOwner = giver.username.toLowerCase() === OWNER_USERNAME.toLowerCase();
+    // Лимит только для не-владельца
+    let remainingAfter = null;
     if (!isOwner) {
-      const limit = checkLimit(giver.id);
+      const limitCheck = checkAndUseLimit(giver.id, absAmount);
 
-      if (!limit.allowed) {
-        return interaction.reply({
-          content: `⛔ Ты исчерпал лимит **10 000 кредитов** за 30 минут!\nПодожди ещё **${formatTime(limit.resetIn)}**`,
-          ephemeral: true
-        });
+      if (!limitCheck.allowed) {
+        if (limitCheck.reason === 'exhausted') {
+          return interaction.reply({
+            content: `⛔ Ты исчерпал лимит **10 000 кредитов** за 30 минут!\nПодожди ещё **${formatTime(limitCheck.resetIn)}**`,
+            ephemeral: true
+          });
+        }
+        if (limitCheck.reason === 'exceed') {
+          return interaction.reply({
+            content: `⛔ Превышение лимита!\nМожно перевести максимум ещё **${limitCheck.remaining}** кредитов.\n${limitCheck.resetIn > 0 ? `Лимит сбросится через **${formatTime(limitCheck.resetIn)}**` : ''}`,
+            ephemeral: true
+          });
+        }
       }
 
-      if (absAmount > limit.remaining) {
-        return interaction.reply({
-          content: `⛔ Превышение лимита! Ты можешь перевести ещё максимум **${limit.remaining}** кредитов.\nЛимит сбросится через **${formatTime(limit.resetIn || COOLDOWN_MS)}**`,
-          ephemeral: true
-        });
-      }
-
-      useLimit(giver.id, absAmount);
+      remainingAfter = limitCheck.remaining;
     }
 
     const newTotal = addCredits(targetUser.id, amount);
@@ -239,8 +241,9 @@ client.on('interactionCreate', async interaction => {
     const sign = amount >= 0 ? '+' : '';
     const emoji = amount >= 0 ? '📈' : '📉';
 
-    // Считаем остаток лимита для отображения
-    const limitAfter = isOwner ? null : checkLimit(giver.id);
+    const footerText = isOwner
+      ? `Изменил: ${giver.username} 👑`
+      : `Изменил: ${giver.username} | Осталось лимита: ${remainingAfter} / ${LIMIT_PER_30MIN}`;
 
     const embed = new EmbedBuilder()
       .setColor(color)
@@ -252,7 +255,7 @@ client.on('interactionCreate', async interaction => {
         { name: '💳 Баланс',       value: `**${newTotal}** кредитов`, inline: true },
         { name: '🎖 Статус',       value: label, inline: false },
       )
-      .setFooter({ text: isOwner ? `Изменил: ${giver.username} 👑` : `Изменил: ${giver.username} | Осталось лимита: ${limitAfter.remaining}` })
+      .setFooter({ text: footerText })
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });
