@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
+const http = require('http');
 
 // ================================
 // НАСТРОЙКИ
@@ -9,6 +10,9 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const DB_FILE = './credits.json';
 const DEFAULT_CREDITS = 10000;
 // ================================
+
+// --- Веб-сервер чтобы Render не засыпал ---
+http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 // --- База данных ---
 function loadDB() {
@@ -35,26 +39,22 @@ function addCredits(userId, amount) {
 }
 
 // --- Вердикт партии для /socialstats ---
-// Считаем отклонение от стартового баланса (10000)
 function getPartyVerdict(credits) {
-  const diff = credits - DEFAULT_CREDITS; // насколько выше/ниже старта
+  const diff = credits - DEFAULT_CREDITS;
 
   if (diff > 100) {
-    // Больше 100 плюсом от старта
     return {
       title: '🎉 Партия гордиться тобой!',
       message: '🍚 Партия дарить тебе **миска рис**\n🐱 Партия дарить тебе **кошка жена**\n\nТы достойный гражданин! Продолжать служить Партии!',
       color: 0xFFD700,
     };
   } else if (diff >= 0) {
-    // От 0 до +100 от старта
     return {
       title: '👍 Хорошо, но можно лучше',
       message: 'Партия видеть твои старания...\nНо Партия ожидать большего от тебя!\n\nПродолжать работать усердно!',
       color: 0x00BFFF,
     };
   } else {
-    // Минус от старта
     return {
       title: '😤 Ай ай ай! Партия не гордиться тобой!',
       message: '🍚 Партия **забирать миска рис**\n🐱 Партия **забирать кошка жена**\n\nПозор! Исправляться немедленно!',
@@ -154,9 +154,9 @@ client.on('interactionCreate', async interaction => {
       .setTitle(verdict.title)
       .setThumbnail(targetUser.displayAvatarURL())
       .addFields(
-        { name: '👤 Гражданин',  value: `<@${targetUser.id}>`, inline: true },
-        { name: '💳 Кредиты',    value: `**${credits}**`, inline: true },
-        { name: '🎖 Статус',     value: label, inline: false },
+        { name: '👤 Гражданин',      value: `<@${targetUser.id}>`, inline: true },
+        { name: '💳 Кредиты',        value: `**${credits}**`, inline: true },
+        { name: '🎖 Статус',         value: label, inline: false },
         { name: '📜 Решение Партии', value: verdict.message, inline: false },
       )
       .setFooter({ text: '🇨🇳 Социальный кредит — это серьёзно' })
