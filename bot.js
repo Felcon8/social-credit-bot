@@ -19,28 +19,40 @@ const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const WHEEL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const EXAM_COOLDOWN_MS = 60 * 60 * 1000;
 const VOTE_COOLDOWN_MS = 60 * 60 * 1000;
+const ACTIVITY_COOLDOWN_MS = 60 * 60 * 1000;
+const INJURY_MS = 60 * 60 * 1000;         // лечение после травмы в шахте
+const JAIL_MIN_MS = 30 * 60 * 1000;       // тюрьма шпиона: от 30 мин
+const JAIL_MAX_MS = 2 * 60 * 60 * 1000;   // тюрьма шпиона: до 2 часов
+const WORKER_DAY_MS = 24 * 60 * 60 * 1000;
+const WORKER_OF_DAY_BONUS_CREDITS = 2000;
+const WORKER_OF_DAY_BONUS_YUAN = 1000;
 // ========================================================
 
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
+function freshDB() {
+  return {
+    credits: {}, limits: {}, creditCooldown: {}, economy: {}, workCooldown: {},
+    dailyCooldown: {}, wheelCooldown: {}, examCooldown: {}, voteCooldown: {},
+    achievements: {}, professions: {}, activityCooldown: {},
+    jail: {}, injury: {},
+    workerOfDay: { shifts: {}, lastReset: Date.now() }
+  };
+}
+
 function loadDB() {
-  if (!fs.existsSync(DB_FILE)) return { credits: {}, limits: {}, creditCooldown: {}, economy: {}, workCooldown: {}, dailyCooldown: {}, wheelCooldown: {}, examCooldown: {}, voteCooldown: {}, achievements: {}, professions: {} };
+  if (!fs.existsSync(DB_FILE)) return freshDB();
   try {
     const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    if (!data.credits) data.credits = {};
-    if (!data.limits) data.limits = {};
-    if (!data.creditCooldown) data.creditCooldown = {};
-    if (!data.economy) data.economy = {};
-    if (!data.workCooldown) data.workCooldown = {};
-    if (!data.dailyCooldown) data.dailyCooldown = {};
-    if (!data.wheelCooldown) data.wheelCooldown = {};
-    if (!data.examCooldown) data.examCooldown = {};
-    if (!data.voteCooldown) data.voteCooldown = {};
-    if (!data.achievements) data.achievements = {};
-    if (!data.professions) data.professions = {};
+    const fresh = freshDB();
+    for (const key of Object.keys(fresh)) {
+      if (data[key] === undefined) data[key] = fresh[key];
+    }
+    if (!data.workerOfDay.shifts) data.workerOfDay.shifts = {};
+    if (!data.workerOfDay.lastReset) data.workerOfDay.lastReset = Date.now();
     return data;
   } catch {
-    return { credits: {}, limits: {}, creditCooldown: {}, economy: {}, workCooldown: {}, dailyCooldown: {}, wheelCooldown: {}, examCooldown: {}, voteCooldown: {}, achievements: {}, professions: {} };
+    return freshDB();
   }
 }
 
@@ -129,6 +141,84 @@ function checkAndUseLimit(giverId, absAmount) {
   return { allowed: true, remaining: remaining - absAmount };
 }
 
+// ── Тюрьма (шпион) ──────────────────────────────────────────
+function getJailRemaining(db, userId) {
+  const until = db.jail[userId] || 0;
+  const now = Date.now();
+  if (until <= now) return 0;
+  return until - now;
+}
+
+function sendToJail(db, userId) {
+  const term = JAIL_MIN_MS + Math.floor(Math.random() * (JAIL_MAX_MS - JAIL_MIN_MS + 1));
+  db.jail[userId] = Date.now() + term;
+  saveDB(db);
+  return term;
+}
+
+// ── Травмы (шахта) ──────────────────────────────────────────
+function getInjuryRemaining(db, userId) {
+  const until = db.injury[userId] || 0;
+  const now = Date.now();
+  if (until <= now) return 0;
+  return until - now;
+}
+
+function setInjury(db, userId, ms = INJURY_MS) {
+  db.injury[userId] = Date.now() + ms;
+  saveDB(db);
+}
+
+function cureInjury(db, userId) {
+  delete db.injury[userId];
+  saveDB(db);
+}
+
+// ── Лучший работник дня ─────────────────────────────────────
+function trackShift(userId) {
+  const db = loadDB();
+  if (!db.workerOfDay.shifts) db.workerOfDay.shifts = {};
+  db.workerOfDay.shifts[userId] = (db.workerOfDay.shifts[userId] || 0) + 1;
+  saveDB(db);
+}
+
+async function checkWorkerOfDayReset(client) {
+  const db = loadDB();
+  const now = Date.now();
+  if (!db.workerOfDay.lastReset) db.workerOfDay.lastReset = now;
+  if (now - db.workerOfDay.lastReset < WORKER_DAY_MS) return;
+
+  const entries = Object.entries(db.workerOfDay.shifts || {});
+  db.workerOfDay.lastReset = now;
+
+  if (entries.length === 0) { db.workerOfDay.shifts = {}; saveDB(db); return; }
+
+  entries.sort((a, b) => b[1] - a[1]);
+  const [winnerId, shifts] = entries[0];
+  db.workerOfDay.shifts = {};
+
+  if (db.credits[winnerId] === undefined) db.credits[winnerId] = DEFAULT_CREDITS;
+  db.credits[winnerId] += WORKER_OF_DAY_BONUS_CREDITS;
+  if (!db.economy[winnerId]) db.economy[winnerId] = { wallet: 0, items: { cat_wife: false, rice_bowls: 0 } };
+  db.economy[winnerId].wallet += WORKER_OF_DAY_BONUS_YUAN;
+  saveDB(db);
+
+  try {
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (!guild) return;
+    const channel = guild.systemChannel
+      || guild.channels.cache.find(c => c.isTextBased && c.isTextBased() && c.permissionsFor(guild.members.me)?.has('SendMessages'));
+    if (!channel) return;
+    const embed = new EmbedBuilder()
+      .setColor(0xFFD700)
+      .setTitle('🏆 Лучший работник дня')
+      .setDescription(`Партия отмечает <@${winnerId}>!\nОтработано смен за сутки: **${shifts}**\n\n⭐ +${WORKER_OF_DAY_BONUS_CREDITS} соц. кредитов\n💴 +${WORKER_OF_DAY_BONUS_YUAN} юаней`);
+    await channel.send({ embeds: [embed] });
+  } catch (e) {
+    console.error('Не удалось объявить лучшего работника дня:', e.message);
+  }
+}
+
 // Достижения
 const ACHIEVEMENTS_LIST = {
   'first_work':    { name: '🔨 Первый рабочий', desc: 'Первый раз поработал на заводе', reward: 500 },
@@ -159,6 +249,34 @@ const PROFESSIONS = {
   miner:      { name: '⛏️ Шахтёр',    minPay: 300, maxPay: 1500, riskChance: 20, riskLoss: 800,  cooldown: 3600000 },
   accountant: { name: '📊 Бухгалтер', minPay: 200, maxPay: 400,  riskChance: 2,  riskLoss: 100,  cooldown: 1800000 },
   spy:        { name: '🕵️ Шпион',     minPay: 500, maxPay: 2000, riskChance: 35, riskLoss: 1200, cooldown: 7200000 },
+};
+
+// ⛏️ Шахта — выпадающие предметы (шанс в %, награда в юанях, шанс травмы в %)
+const MINE_ITEMS = [
+  { id: 'stone',   name: '🪨 Камень',  chance: 50, yuanMin: 50,   yuanMax: 150,  injuryChance: 25 },
+  { id: 'coal',    name: '⚫ Уголь',   chance: 25, yuanMin: 150,  yuanMax: 350,  injuryChance: 35 },
+  { id: 'iron',    name: '⛓️ Железо',  chance: 15, yuanMin: 400,  yuanMax: 800,  injuryChance: 0  },
+  { id: 'gold',    name: '🥇 Золото',  chance: 7,  yuanMin: 900,  yuanMax: 1500, injuryChance: 0  },
+  { id: 'diamond', name: '💎 Алмаз',   chance: 3,  yuanMin: 1500, yuanMax: 2500, injuryChance: 0  },
+];
+
+function rollMineItem() {
+  const total = MINE_ITEMS.reduce((s, x) => s + x.chance, 0);
+  let rand = Math.random() * total;
+  for (const item of MINE_ITEMS) {
+    rand -= item.chance;
+    if (rand <= 0) return item;
+  }
+  return MINE_ITEMS[0];
+}
+
+// 👵 Активности — раз в час, поднимают соц. рейтинг
+const ACTIVITIES = {
+  flag:   { name: '🇨🇳 Помахать флагом Партии на площади',    min: 100, max: 300 },
+  clean:  { name: '🧹 Убрать двор соседа',                      min: 150, max: 350 },
+  poster: { name: '📢 Расклеить агитационные плакаты',          min: 200, max: 400 },
+  elder:  { name: '👵 Помочь бабушке перейти дорогу',           min: 250, max: 450 },
+  song:   { name: '🎤 Спеть гимн Партии перед комитетом',       min: 300, max: 500 },
 };
 
 // Партийные экзамены
@@ -243,17 +361,55 @@ async function registerCommands() {
 
     new SlashCommandBuilder().setName('achievements_v2_0').setDescription('Посмотреть свои достижения'),
 
+    new SlashCommandBuilder()
+      .setName('activity_v2_0')
+      .setDescription('Заняться общественной деятельностью (раз в час)')
+      .addStringOption(opt => opt
+        .setName('activity')
+        .setDescription('Выберите активность')
+        .setRequired(true)
+        .addChoices(
+          { name: '🇨🇳 Помахать флагом Партии на площади', value: 'flag' },
+          { name: '🧹 Убрать двор соседа', value: 'clean' },
+          { name: '📢 Расклеить агитационные плакаты', value: 'poster' },
+          { name: '👵 Помочь бабушке перейти дорогу', value: 'elder' },
+          { name: '🎤 Спеть гимн Партии перед комитетом', value: 'song' }
+        )),
+
+    new SlashCommandBuilder().setName('workerboard_v2_0').setDescription('Топ работников дня (шахта + бухгалтерия)'),
+
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+  // Чистим глобальные команды — если бот когда-то регистрировал команды и глобально,
+  // и на сервере (guild), Discord показывает их ДВАЖДЫ в списке. Убираем глобальные,
+  // оставляем только гильдийные (они обновляются мгновенно).
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+  } catch (e) {
+    console.error('⚠️ Не удалось очистить глобальные команды:', e.message);
+  }
+
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-  console.log('✅ Команды зарегистрированы!');
+  console.log('✅ Команды зарегистрированы (дубли глобальных команд очищены)!');
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// GuildMessages + MessageContent нужны для /exam_v2_0 (ожидание ответа в чат)
+// и для голосования "кто вор" в /steal_v2_0 (сбор сообщений с упоминаниями).
+// MessageContent — привилегированный intent, включи его в Discord Developer Portal → Bot → Privileged Gateway Intents.
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ]
+});
 
 client.on('ready', () => {
   console.log(`🤖 Бот запущен как ${client.user.tag}`);
+  checkWorkerOfDayReset(client).catch(e => console.error(e));
+  setInterval(() => checkWorkerOfDayReset(client).catch(e => console.error(e)), 15 * 60 * 1000);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -266,11 +422,11 @@ client.on('interactionCreate', async interaction => {
       .setColor(0xED2939)
       .setTitle('📕 Справочник Партии v2.0')
       .addFields(
-        { name: '💰 Заработок', value: '`/work_v2_0` — завод (раз в час)\n`/profession_v2_0` — работа по специальности\n`/daily_v2_0` — ежедневная награда', inline: false },
+        { name: '💰 Заработок', value: '`/work_v2_0` — завод (раз в час)\n`/profession_v2_0` — работа по специальности (⛏️ шахта, 📊 бухгалтерия, 🕵️ шпион)\n`/daily_v2_0` — ежедневная награда\n`/activity_v2_0` — общественная деятельность (раз в час, +соц. рейтинг)', inline: false },
         { name: '🎮 Развлечения', value: '`/wheel_v2_0` — колесо фортуны\n`/exam_v2_0` — партийный экзамен\n`/vote_v2_0` — народный суд', inline: false },
         { name: '🛒 Магазин', value: '`/partyshop_v2_0` — товары\n`/buy_v2_0` — купить', inline: false },
-        { name: '🥷 Риск', value: '`/steal_v2_0` — украсть юани (штраф при провале)', inline: false },
-        { name: '👤 Профиль', value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения', inline: false }
+        { name: '🥷 Риск', value: '`/steal_v2_0` — украсть юани (анимация + штраф при провале)', inline: false },
+        { name: '👤 Профиль', value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения\n`/workerboard_v2_0` — топ работников дня', inline: false }
       );
     await interaction.reply({ embeds: [embed] });
   }
@@ -469,6 +625,18 @@ client.on('interactionCreate', async interaction => {
     const prof = PROFESSIONS[job];
     const db = loadDB();
 
+    // Тюрьма — нельзя работать, пока не отсидел
+    const jailLeft = getJailRemaining(db, userId);
+    if (jailLeft > 0) {
+      return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**. Работать нельзя.`, flags: 64 });
+    }
+
+    // Травма в шахте — нельзя работать, пока не вылечился
+    const injuryLeft = getInjuryRemaining(db, userId);
+    if (injuryLeft > 0) {
+      return interaction.reply({ content: `🩹 Ты травмирован и лечишься! До выздоровления: **${formatTime(injuryLeft)}**. Работать нельзя.`, flags: 64 });
+    }
+
     const cdKey = `prof_${job}`;
     const now = Date.now();
     if (!db.workCooldown[userId]) db.workCooldown[userId] = {};
@@ -479,6 +647,69 @@ client.on('interactionCreate', async interaction => {
     db.workCooldown[`${userId}_${cdKey}`] = now;
     saveDB(db);
 
+    // ── ⛏️ Шахтёр: выпадение предметов ────────────────────
+    if (job === 'miner') {
+      const item = rollMineItem();
+      const earn = Math.floor(Math.random() * (item.yuanMax - item.yuanMin + 1)) + item.yuanMin;
+
+      if (item.id === 'diamond') {
+        // Алмаз = +5000 соц. кредитов + бесплатное лечение + премия
+        addCredits(userId, 5000);
+        addYuan(userId, earn);
+        const db2 = loadDB();
+        const wasInjured = getInjuryRemaining(db2, userId) > 0;
+        cureInjury(db2, userId);
+        trackShift(userId);
+        const embed = new EmbedBuilder()
+          .setColor(0xFF00FF)
+          .setTitle('💎 ДЖЕКПОТ ШАХТЫ — Алмаз!')
+          .setDescription(`Ты нашёл **алмаз**! Партия щедро награждает!\n\n⭐ +5000 соц. кредитов\n💴 +${earn} юаней (премия)${wasInjured ? '\n🩹 Бесплатное лечение — травма снята!' : ''}\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
+        return interaction.reply({ embeds: [embed] });
+      }
+
+      const gotInjured = item.injuryChance > 0 && Math.random() * 100 < item.injuryChance;
+      addYuan(userId, earn);
+      trackShift(userId);
+
+      if (gotInjured) {
+        const db2 = loadDB();
+        setInjury(db2, userId);
+        const embed = new EmbedBuilder()
+          .setColor(0xFF4500)
+          .setTitle(`${item.name} — Травма на смене!`)
+          .setDescription(`Ты добыл ${item.name.toLowerCase()}, но он упал тебе на голову!\n💴 +${earn} юаней\n🩹 Требуется лечение: **${formatTime(INJURY_MS)}** — работать нельзя.`);
+        return interaction.reply({ embeds: [embed] });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF88)
+        .setTitle(`${item.name} — Смена выполнена!`)
+        .setDescription(`Ты добыл: ${item.name}\n💴 +${earn} юаней\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // ── 🕵️ Шпион: провал = тюрьма ─────────────────────────
+    if (job === 'spy') {
+      const failed = Math.random() * 100 < prof.riskChance;
+      if (failed) {
+        const db2 = loadDB();
+        const term = sendToJail(db2, userId);
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle('🕵️ Шпион — Провал! Ты арестован!')
+          .setDescription(`Тебя раскрыли и бросили в тюрьму!\n🚔 Срок: **${formatTime(term)}**\nПока сидишь — нельзя работать и воровать.`);
+        return interaction.reply({ embeds: [embed] });
+      }
+      const earn = Math.floor(Math.random() * (prof.maxPay - prof.minPay + 1)) + prof.minPay;
+      addYuan(userId, earn);
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF88)
+        .setTitle(`${prof.name} — Смена выполнена!`)
+        .setDescription(`Операция прошла успешно!\n💴 +${earn} юаней\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
+      return interaction.reply({ embeds: [embed] });
+    }
+
+    // ── 📊 Бухгалтер и остальные — обычная логика ─────────
     const failed = Math.random() * 100 < prof.riskChance;
     if (failed) {
       addYuan(userId, -prof.riskLoss);
@@ -491,11 +722,47 @@ client.on('interactionCreate', async interaction => {
 
     const earn = Math.floor(Math.random() * (prof.maxPay - prof.minPay + 1)) + prof.minPay;
     addYuan(userId, earn);
+    trackShift(userId);
 
     const embed = new EmbedBuilder()
       .setColor(0x00FF88)
       .setTitle(`${prof.name} — Смена выполнена!`)
       .setDescription(`Отличная работа, гражданин!\n💴 +${earn} юаней\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ── /activity_v2_0 ───────────────────────────────────────
+  else if (interaction.commandName === 'activity_v2_0') {
+    const db = loadDB();
+    const cd = checkCooldown(db, 'activityCooldown', userId, ACTIVITY_COOLDOWN_MS);
+    if (!cd.allowed) return interaction.reply({ content: `⏳ Ты уже занимался общественной деятельностью! Следующий раз через **${formatTime(cd.waitMs)}**.`, flags: 64 });
+
+    const key = interaction.options.getString('activity');
+    const act = ACTIVITIES[key];
+    const reward = Math.floor(Math.random() * (act.max - act.min + 1)) + act.min;
+    addCredits(userId, reward);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00BFFF)
+      .setTitle('👵 Общественная деятельность')
+      .setDescription(`${act.name}\n\n⭐ +${reward} соц. кредитов\nПартия ценит твоё усердие!`);
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ── /workerboard_v2_0 ────────────────────────────────────
+  else if (interaction.commandName === 'workerboard_v2_0') {
+    const db = loadDB();
+    const entries = Object.entries(db.workerOfDay.shifts || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const timeLeft = WORKER_DAY_MS - (Date.now() - (db.workerOfDay.lastReset || Date.now()));
+    if (entries.length === 0) {
+      return interaction.reply({ content: `Сегодня ещё никто не отработал смену в шахте или бухгалтерии.\n⏳ Подведение итогов через **${formatTime(Math.max(timeLeft, 0))}**.`, flags: 64 });
+    }
+    const lines = entries.map(([id, c], i) => `**${i + 1}.** <@${id}> — ${c} смен`).join('\n');
+    const embed = new EmbedBuilder()
+      .setColor(0xFFD700)
+      .setTitle('🏆 Лучшие работники дня (шахта + бухгалтерия)')
+      .setDescription(lines)
+      .setFooter({ text: `Итоги и премия лидеру через ${formatTime(Math.max(timeLeft, 0))}` });
     await interaction.reply({ embeds: [embed] });
   }
 
@@ -559,6 +826,9 @@ client.on('interactionCreate', async interaction => {
     const db = loadDB();
     const achCount = (db.achievements[userId] || []).length;
 
+    const jailLeft = getJailRemaining(db, userId);
+    const injuryLeft = getInjuryRemaining(db, userId);
+
     const embed = new EmbedBuilder()
       .setColor(rating.color)
       .setTitle(`🛂 Паспорт гражданина: ${interaction.user.username}`)
@@ -570,6 +840,8 @@ client.on('interactionCreate', async interaction => {
         { name: '🐱 Кошка-жена', value: eco.items.cat_wife ? 'Есть ✅' : 'Нет ❌', inline: true },
         { name: '🍚 Миски риса', value: `${eco.items.rice_bowls}`, inline: true }
       );
+    if (jailLeft > 0) embed.addFields({ name: '🚔 В тюрьме', value: `Осталось: ${formatTime(jailLeft)}`, inline: true });
+    if (injuryLeft > 0) embed.addFields({ name: '🩹 На лечении', value: `Осталось: ${formatTime(injuryLeft)}`, inline: true });
     await interaction.reply({ embeds: [embed] });
   }
 
@@ -627,6 +899,12 @@ client.on('interactionCreate', async interaction => {
     if (amount <= 0) return interaction.reply({ content: '❌ Укажи положительную сумму!', flags: 64 });
     if (getCredits(userId) < 0) return interaction.reply({ content: '❌ Враги народа не могут воровать!', flags: 64 });
 
+    const dbCheck = loadDB();
+    const jailLeft = getJailRemaining(dbCheck, userId);
+    if (jailLeft > 0) {
+      return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**. Воровать нельзя.`, flags: 64 });
+    }
+
     const targetEco = getEco(targetUser.id);
     if (targetEco.wallet < amount) return interaction.reply({ content: `❌ У цели только **${targetEco.wallet} юаней**!`, flags: 64 });
 
@@ -644,25 +922,70 @@ client.on('interactionCreate', async interaction => {
     try {
       const i = await msg.awaitMessageComponent({ filter: c => c.user.id === userId, time: 30000 });
       if (i.customId === 'steal_cancel') return i.update({ content: '❌ Кража отменена.', embeds: [], components: [] });
+      await i.update({ content: '🕵️ **Кто-то крадётся во тьме...**', embeds: [], components: [] });
 
-      const symbols = ['💰', '🚨', '👮', '💸', '🐱', '💀'];
-      await i.update({ content: `🎰 **Взлом...** [${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]}]`, embeds: [], components: [] });
-      await new Promise(r => setTimeout(r, 1000));
-      await interaction.editReply({ content: `🎰 **Взлом...** [${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]}]` });
-      await new Promise(r => setTimeout(r, 1000));
-      await interaction.editReply({ content: `🎰 **Взлом...** [${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]} | ${symbols[Math.floor(Math.random()*6)]}]` });
-      await new Promise(r => setTimeout(r, 1000));
+      // Анимация: стрелочка ходит по квадратикам 10 секунд (5 кадров по 2 сек)
+      const SQUARES = 8;
+      const FRAMES = 5;
+      for (let frame = 0; frame < FRAMES; frame++) {
+        const pos = Math.floor(Math.random() * SQUARES);
+        let row = '';
+        for (let s = 0; s < SQUARES; s++) row += s === pos ? '👆' : '⬛';
+        await interaction.editReply({ content: `🕵️ **Незаметное проникновение...**\n${row}` });
+        await new Promise(r => setTimeout(r, 2000));
+      }
 
-      if (Math.random() * 100 < chance) {
+      const success = Math.random() * 100 < chance;
+      const channel = interaction.channel;
+
+      if (success) {
         addYuan(targetUser.id, -amount);
         addYuan(userId, amount);
         const ach = giveAchievement(userId, 'thief');
+
+        await interaction.editReply({ content: '✅ **Кража совершена...**', embeds: [], components: [] });
+
+        // Публичное объявление — вор остаётся анонимным
+        const announceEmbed = new EmbedBuilder()
+          .setColor(0x2F3136)
+          .setTitle('🕵️ ОГРАБЛЕНИЕ!')
+          .setDescription(`**Неизвестный** похитил **${amount} юаней** у ${targetUser.username}!\n\nЛичность вора неизвестна. У вас есть **10 секунд**, чтобы обвинить кого-то — упомяните подозреваемого (@ник) в чате!`);
+        const announceMsg = await channel.send({ embeds: [announceEmbed] });
+
+        const accusations = new Map(); // voterId -> accusedId
+        try {
+          const collector = channel.createMessageCollector({ filter: m => !m.author.bot && m.mentions.users.size > 0, time: 10000 });
+          collector.on('collect', m => {
+            const accused = m.mentions.users.first();
+            if (accused.id === m.author.id) return;
+            accusations.set(m.author.id, accused.id);
+          });
+          await new Promise(resolve => collector.on('end', resolve));
+        } catch { /* игнорируем ошибки сборщика */ }
+
+        let voteText = 'Никто никого не обвинил. Вор гуляет на свободе...';
+        if (accusations.size > 0) {
+          const tally = {};
+          for (const accusedId of accusations.values()) tally[accusedId] = (tally[accusedId] || 0) + 1;
+          const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+          const [suspectId, votes] = sorted[0];
+          const isRight = suspectId === userId;
+          voteText = `Народ считает вором: <@${suspectId}> (${votes} голос${votes === 1 ? '' : 'ов'})\n${isRight ? '🎯 Народ не ошибся... или это просто совпадение?' : '🤷 Но правду, конечно, никто не узнает наверняка.'}`;
+        }
+
+        const voteEmbed = new EmbedBuilder()
+          .setColor(0x888888)
+          .setTitle('🗳️ Итоги народного расследования')
+          .setDescription(voteText);
+        await channel.send({ embeds: [voteEmbed] });
+
         let achMsg = '';
         if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
-        await interaction.editReply({ content: `🎰 **УСПЕХ!** Ты украл **${amount} юаней** у ${targetUser.username}!` + achMsg });
+        await interaction.followUp({ content: `🎰 **УСПЕХ!** Ты анонимно украл **${amount} юаней** у ${targetUser.username}!` + achMsg, flags: 64 });
       } else {
         addCredits(userId, -500);
-        await interaction.editReply({ content: `🎰 **ПРОВАЛ!** Тебя поймали! Штраф: **-500 соц. кредитов**.` });
+        await interaction.editReply({ content: `🎰 **ПРОВАЛ!** Тебя поймали с поличным! Штраф: **-500 соц. кредитов**.`, embeds: [], components: [] });
+        await channel.send({ content: `🚨 ${interaction.user.username} попался на попытке кражи у ${targetUser.username} и получил штраф!` });
       }
     } catch {
       interaction.editReply({ content: '⏳ Время вышло. Кража отменена.', embeds: [], components: [] });
@@ -723,7 +1046,7 @@ client.on('interactionCreate', async interaction => {
   // ── /resetall ───────────────────────────────────────────
   else if (interaction.commandName === 'resetall') {
     if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец!', flags: 64 });
-    saveDB({ credits: {}, limits: {}, creditCooldown: {}, economy: {}, workCooldown: {}, dailyCooldown: {}, wheelCooldown: {}, examCooldown: {}, voteCooldown: {}, achievements: {}, professions: {} });
+    saveDB(freshDB());
     await interaction.reply({ content: '✅ Все данные сброшены!' });
   }
 });
