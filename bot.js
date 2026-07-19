@@ -374,8 +374,7 @@ client.on('interactionCreate', async interaction => {
 
   // ── /exam_v2_0 ──────────────────────────────────────────
   else if (interaction.commandName === 'exam_v2_0') {
-    const cd = await checkCooldown(userId, 'examCooldown', EXAM_COOLDOWN_MS);
-    if (!cd.allowed) return interaction.reply({ content: `⏳ Следующий экзамен через **${formatTime(cd.waitMs)}**.`, flags: 64 });
+    // Проверка кулдауна удалена, сдавать экзамен можно без ограничений по времени
 
     const q = EXAM_QUESTIONS[Math.floor(Math.random() * EXAM_QUESTIONS.length)];
     const embed = new EmbedBuilder()
@@ -402,7 +401,7 @@ client.on('interactionCreate', async interaction => {
         let achMsg = '';
         if (streak >= 3) {
           const ach = await giveAchievement(userId, 'exam_ace');
-          if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
+          if (ach) achMsg = `\n🏅 **Новое achievement:** ${ach.name} (+${ach.reward} кредитов)`;
           await setExamStreak(userId, 0);
         }
 
