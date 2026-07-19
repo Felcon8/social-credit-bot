@@ -265,8 +265,6 @@ async function registerCommands() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -293,7 +291,7 @@ client.on('interactionCreate', async interaction => {
       .setTitle('📕 Справочник Партии v2.0')
       .addFields(
         { name: '💰 Заработок',      value: '`/work_v2_0` — завод (раз в час)\n`/profession_v2_0` — работа по специальности\n`/daily_v2_0` — ежедневная награда\n`/activity_v2_0` — общественная деятельность (раз в час)', inline: false },
-        { name: '🎮 Развлечения',    value: '`/wheel_v2_0` — колесо фортуны\n`/exam_v2_0` — партийный экзамен\n`/vote_v2_0` — народный суд', inline: false },
+        { name: '🎮 Развлечения',    value: '`/wheel_v2_0` — колесо фортуны\n`/exam_v2_0` — партийный экзамен\n`/vote_v2_0` — narodный суд', inline: false },
         { name: '🛒 Магазин',        value: '`/partyshop_v2_0` — товары\n`/buy_v2_0` — купить', inline: false },
         { name: '🥷 Риск',           value: '`/steal_v2_0` — украсть юани', inline: false },
         { name: '👤 Профиль',        value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения\n`/workerboard_v2_0` — топ работников дня', inline: false },
@@ -378,39 +376,41 @@ client.on('interactionCreate', async interaction => {
     if (!cd.allowed) return interaction.reply({ content: `⏳ Следующий экзамен через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
     const q = EXAM_QUESTIONS[Math.floor(Math.random() * EXAM_QUESTIONS.length)];
-    const embed = new EmbedBuilder()
-      .setColor(0xED2939)
-      .setTitle('📚 Партийный экзамен')
-      .setDescription(`**Вопрос:** ${q.q}\n\n_Подсказка: ${q.hint}_\n\nУ тебя **60 секунд** — напиши ответ в чат!`);
-    await interaction.reply({ embeds: [embed] });
-
+    
+    const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder: ModalRow } = require('discord.js');
+    const modal = new ModalBuilder()
+      .setCustomId(`exam_${userId}`)
+      .setTitle('📚 Партийный экзамен');
+    const input = new TextInputBuilder()
+      .setCustomId('exam_answer')
+      .setLabel(q.q)
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder(q.hint)
+      .setRequired(true);
+    modal.addComponents(new ModalRow().addComponents(input));
+    await interaction.showModal(modal);
     try {
-      const filter = m => m.author.id === userId;
-      const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
-      const answer = collected.first().content.toLowerCase().trim();
+      const submitted = await interaction.awaitModalSubmit({ time: 60000, filter: i => i.customId === `exam_${userId}` });
+      const answer = submitted.fields.getTextInputValue('exam_answer').toLowerCase().trim();
       const correct = q.answers.some(a => answer.includes(a));
-
       if (correct) {
         const reward = Math.floor(Math.random() * 1001) + 500;
         await addCredits(userId, reward);
         await addYuan(userId, 200);
-
         let streak = await getExamStreak(userId);
         streak++;
         await setExamStreak(userId, streak);
-
         let achMsg = '';
         if (streak >= 3) {
           const ach = await giveAchievement(userId, 'exam_ace');
           if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
           await setExamStreak(userId, 0);
         }
-
         const winEmbed = new EmbedBuilder()
           .setColor(0x00FF88)
           .setTitle('✅ Правильно! Партия одобряет!')
           .setDescription(`Ответ принят!\n⭐ +${reward} соц. кредитов\n💴 +200 юаней` + achMsg);
-        await interaction.followUp({ embeds: [winEmbed] });
+        await submitted.reply({ embeds: [winEmbed] });
       } else {
         await addCredits(userId, -300);
         await setExamStreak(userId, 0);
@@ -418,11 +418,10 @@ client.on('interactionCreate', async interaction => {
           .setColor(0xFF0000)
           .setTitle('❌ Неверно! Позор!')
           .setDescription(`Правильный ответ: **${q.answers[0]}**\n⭐ -300 соц. кредитов`);
-        await interaction.followUp({ embeds: [loseEmbed] });
+        await submitted.reply({ embeds: [loseEmbed] });
       }
     } catch {
-      const timeEmbed = new EmbedBuilder().setColor(0x888888).setTitle('⏰ Время вышло!').setDescription(`Правильный ответ: **${q.answers[0]}**`);
-      await interaction.followUp({ embeds: [timeEmbed] });
+      await interaction.followUp({ content: `⏰ Время вышло! Правильный ответ: **${q.answers[0]}**`, flags: 64 });
     }
   }
 
@@ -580,8 +579,6 @@ client.on('interactionCreate', async interaction => {
   // ── /workerboard_v2_0 ────────────────────────────────────
   else if (interaction.commandName === 'workerboard_v2_0') {
     const { getWorkerDayDoc } = require('./database');
-    // Получаем напрямую через getPlayer не нужно — используем экспортированную функцию
-    // Здесь используем временное решение через mongoose
     const WorkerDay = require('mongoose').model('WorkerDay');
     const doc = await WorkerDay.findById('singleton');
     if (!doc || !doc.shifts || doc.shifts.size === 0) {
@@ -775,14 +772,7 @@ client.on('interactionCreate', async interaction => {
         await channel.send({ embeds: [announceEmbed] });
 
         const accusations = new Map();
-        try {
-          const collector = channel.createMessageCollector({ filter: m => !m.author.bot && m.mentions.users.size > 0, time: 10000 });
-          collector.on('collect', m => {
-            const accused = m.mentions.users.first();
-            if (accused.id !== m.author.id) accusations.set(m.author.id, accused.id);
-          });
-          await new Promise(resolve => collector.on('end', resolve));
-        } catch { /* игнорируем */ }
+        await new Promise(resolve => setTimeout(resolve, 10000));
 
         let voteText = 'Никто никого не обвинил. Вор гуляет на свободе...';
         if (accusations.size > 0) {
@@ -798,7 +788,7 @@ client.on('interactionCreate', async interaction => {
         await channel.send({ embeds: [voteEmbed] });
 
         let achMsg = '';
-        if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
+        if (ach) achMsg = `\n🏅 **Новое achievement:** ${ach.name} (+${ach.reward} кредитов)`;
         await interaction.followUp({ content: `🎰 **УСПЕХ!** Ты анонимно украл **${amount} юаней** у ${targetUser.username}!` + achMsg, flags: 64 });
       } else {
         await addCredits(userId, -500);
@@ -876,12 +866,10 @@ client.on('interactionCreate', async interaction => {
     }
 
     const question = interaction.options.getString('question');
-    await interaction.deferReply(); // Показываем "думает..." пока ждём ответа AI
+    await interaction.deferReply();
 
     try {
       const answer = await askDeepSeek(question);
-
-      // Обрезаем если слишком длинный (Discord лимит embed description = 4096)
       const truncated = answer.length > 4000 ? answer.slice(0, 3997) + '...' : answer;
 
       const embed = new EmbedBuilder()
