@@ -24,7 +24,7 @@ const {
 // ========================================================
 const TOKEN     = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID  = process.env.GUILD_ID  || 'ВСТАВЬ_СЮДА_ID_СВОЕГО_СЕРВЕРА';
+const GUILD_ID  = process.env.GUILD_ID  || '1151160668892975214';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; // Добавь в Render Environment
 
 const DEFAULT_CREDITS = 10000;
