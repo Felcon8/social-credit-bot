@@ -372,9 +372,30 @@ client.on('interactionCreate', async interaction => {
     await interaction.editReply({ content: '', embeds: [embed] });
   }
 
-  // ── /exam_v2_0 ──────────────────────────────────────────
+ // ── /exam_v2_0 ──────────────────────────────────────────
   else if (interaction.commandName === 'exam_v2_0') {
-    // Проверка кулдауна удалена, сдавать экзамен можно без ограничений по времени
+    const cooldownTime = 5 * 60 * 1000; // 5 минут в миллисекундах
+    const now = Date.now();
+    
+    if (examCooldowns.has(userId)) {
+      const expirationTime = examCooldowns.get(userId) + cooldownTime;
+      
+      if (now < expirationTime) {
+        const timeLeft = Math.ceil((expirationTime - now) / 1000); // секунд осталось
+        const minutes = Math.floor(timeLeft / 60);
+        const seconds = timeLeft % 60;
+        
+        const cooldownEmbed = new EmbedBuilder()
+          .setColor(0xFFCC00)
+          .setTitle('⏳ Рано для нового экзамена!')
+          .setDescription(`Партия требует времени на подготовку вопросов. Подожди ещё **${minutes} мин. ${seconds} сек.** перед следующей попыткой.`);
+        
+        return await interaction.reply({ embeds: [cooldownEmbed], ephemeral: true });
+      }
+    }
+
+    // Устанавливаем кулдаун для пользователя
+    examCooldowns.set(userId, now);
 
     const q = EXAM_QUESTIONS[Math.floor(Math.random() * EXAM_QUESTIONS.length)];
     const embed = new EmbedBuilder()
