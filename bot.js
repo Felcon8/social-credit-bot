@@ -530,7 +530,7 @@ client.on('interactionCreate', async interaction => {
       { name: '📉 Минус-коробка (Упс!)', chance: 0.15, action: async () => { await addCredits(userId, -200); return 'Партия разочарована! **-200 соц. кредитов**'; } },
       { name: '🌾 Пачка риса', chance: 0.45, action: async () => { await addCredits(userId, 150); await addYuan(userId, 50); return 'Обычный обед рабочего. **+150 соц. кредитов** и **+50 юаней**'; } },
       { name: '🐱 Кошко-жена', chance: 0.25, action: async () => { await addCredits(userId, 600); return 'Партия выдала тебе кошко-жену! **+600 соц. кредитов**'; } },
-      { name: '🏎️ Новенький ВАЗ-2107', chance: 0.12, action: async () => { await addCredits(userId, 1500); await addYuan(userId, 300); return 'Ударный труд вознагражден! **+1500 соц. кредитов** и **+300 юаней**'; } },
+      { name: '🏎️ Новенький Чанъа́нь Циюа́нь', chance: 0.12, action: async () => { await addCredits(userId, 1500); await addYuan(userId, 300); return 'Ударный труд вознагражден! **+1500 соц. кредитов** и **+300 юаней**'; } },
       { name: '👑 Фотография Мао Цзэдуна', chance: 0.03, action: async () => { await addCredits(userId, 5000); return 'ВЕЛИЧАЙШАЯ НАГРАДА! Вы нашли портрет Вождя! **+5000 соц. кредитов!**'; } }
     ];
 
