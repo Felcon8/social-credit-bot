@@ -5,17 +5,8 @@ const mongoose = require('mongoose');
 async function connectDB() {
   const uri = process.env.MONGODB_URI;
   if (!uri) throw new Error('MONGODB_URI не задан в переменных окружения!');
-
-  mongoose.connection.on('error', (err) => {
-    console.error('❌ Ошибка соединения с MongoDB:', err);
-  });
-
-  mongoose.connection.on('disconnected', () => {
-    console.warn('⚠️ Соединение с MongoDB потеряно. Переподключение...');
-  });
-
   await mongoose.connect(uri);
-  console.log('✅ MongoDB успешно подключена');
+  console.log('✅ MongoDB подключена');
 }
 
 // ════════════════════════════════════════════════════════════
@@ -162,16 +153,16 @@ function rollCaseItem(caseId) {
 // ДОСТИЖЕНИЯ
 // ════════════════════════════════════════════════════════════
 const ACHIEVEMENTS_LIST = {
-  first_work:    { name: '🏭 Первый рабочий',      desc: 'Поработать на заводе впервые',            reward: 500  },
-  patriot:       { name: '🇨🇳 Патриот',             desc: 'Набрать 20 000 соц. кредитов',            reward: 1000 },
-  wheel_jackpot: { name: '🎡 Удача Партии',         desc: 'Выбить джекпот на колесе фортуны',        reward: 2000 },
-  exam_ace:      { name: '📚 Отличник ЕГЭ',         desc: 'Правильно ответить на 3 вопроса подряд',  reward: 1500 },
-  cat_owner:     { name: '🐱 Муж котлеты',          desc: 'Купить кошку-жену',                       reward: 300  },
-  thief:         { name: '🥷 Скрытый агент',        desc: 'Успешно украсть юани',                    reward: 800  },
-  gambler:       { name: '🎰 Партийный игрок',      desc: 'Купить 5 лотерейных билетов',             reward: 500  },
-  mine_master:   { name: '⛏️ Шахтёр Партии',       desc: 'Скопать 100 ударов в шахте',              reward: 2000 },
-  collector:     { name: '🗂️ Коллекционер',         desc: 'Собрать 10 уникальных предметов',         reward: 3000 },
-  trader:        { name: '💼 Торговец',             desc: 'Совершить первую сделку на аукционе',     reward: 1000 },
+  first_work:   { name: '🏭 Первый рабочий',      desc: 'Поработать на заводе впервые',            reward: 500  },
+  patriot:      { name: '🇨🇳 Патриот',             desc: 'Набрать 20 000 соц. кредитов',            reward: 1000 },
+  wheel_jackpot:{ name: '🎡 Удача Партии',         desc: 'Выбить джекпот на колесе фортуны',        reward: 2000 },
+  exam_ace:     { name: '📚 Отличник ЕГЭ',         desc: 'Правильно ответить на 3 вопроса подряд',  reward: 1500 },
+  cat_owner:    { name: '🐱 Муж котлеты',          desc: 'Купить кошку-жену',                       reward: 300  },
+  thief:        { name: '🥷 Скрытый агент',        desc: 'Успешно украсть юани',                    reward: 800  },
+  gambler:      { name: '🎰 Партийный игрок',      desc: 'Купить 5 лотерейных билетов',             reward: 500  },
+  mine_master:  { name: '⛏️ Шахтёр Партии',       desc: 'Скопать 100 ударов в шахте',              reward: 2000 },
+  collector:    { name: '🗂️ Коллекционер',         desc: 'Собрать 10 уникальных предметов',         reward: 3000 },
+  trader:       { name: '💼 Торговец',             desc: 'Совершить первую сделку на аукционе',     reward: 1000 },
   legendary_find:{ name: '👑 Охотник за легендами', desc: 'Найти легендарный предмет',              reward: 5000 },
 };
 
@@ -238,22 +229,14 @@ const WorkerDay = mongoose.model('WorkerDay', WorkerDaySchema);
 // ── Аукцион ─────────────────────────────────────────────────
 const AuctionSchema = new mongoose.Schema({
   lotId:     { type: String, required: true, unique: true, index: true },
-  sellerId:  { type: String, required: true, index: true },
+  sellerId:  { type: String, required: true },
   itemId:    { type: String, required: true },
   quantity:  { type: Number, default: 1 },
   price:     { type: Number, required: true },
   createdAt: { type: Date, default: Date.now },
-  active:    { type: Boolean, default: true, index: true },
+  active:    { type: Boolean, default: true },
 });
 const Auction = mongoose.model('Auction', AuctionSchema);
-
-// ── Лимит кредитов ──────────────────────────────────────────
-const CreditLimitSchema = new mongoose.Schema({
-  userId:    { type: String, required: true, unique: true },
-  used:      { type: Number, default: 0 },
-  resetAt:   { type: Date, default: () => new Date(Date.now() + 30 * 60 * 1000) },
-});
-const CreditLimit = mongoose.model('CreditLimit', CreditLimitSchema);
 
 // ════════════════════════════════════════════════════════════
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -287,11 +270,6 @@ async function addCredits(userId, amount) {
     { $inc: { credits: amount }, $setOnInsert: { userId } },
     { upsert: true, new: true }
   );
-  
-  // Авто-проверка патриота при пополнении
-  if (p.credits >= 20000) {
-    await giveAchievement(userId, 'patriot');
-  }
   return p.credits;
 }
 
@@ -316,11 +294,6 @@ async function damagePickaxe(userId) {
     },
     { upsert: true, new: true }
   );
-
-  if (p.total_mine_hits >= 100) {
-    await giveAchievement(userId, 'mine_master');
-  }
-
   return { dmg, newDurability: p.pickaxe_durability, totalHits: p.total_mine_hits };
 }
 
@@ -351,74 +324,36 @@ async function upgradePickaxe(userId) {
   return { currentLevel, cost };
 }
 
-async function applyPickaxeUpgrade(userId) {
-  const info = await upgradePickaxe(userId);
+
+// Обновленная функция апгрейда
+async function applyPickaxeUpgrade(userId, upgradeId) {
+  // 1. Проверяем, существует ли такой предмет вообще
+  if (!ITEMS_DB[upgradeId]) {
+    throw new Error('Такого предмета (улучшения) не существует!');
+  }
+
+  // 2. Пытаемся удалить 1 шт. предмета из инвентаря
+  // Функция removeHardwareItem возвращает false, если предмета нет
+  const removed = await removeHardwareItem(userId, upgradeId, 1);
+  if (!removed) {
+    throw new Error(`У вас нет предмета **${ITEMS_DB[upgradeId].name}** в инвентаре!`);
+  }
+
+  // 3. Выполняем апгрейд (логика повышения уровня)
   const p = await Player.findOneAndUpdate(
     { userId },
-    { $inc: { pickaxe_level: 1 }, $set: { pickaxe_durability: 100, pickaxe_max_durability: 100 } },
+    { 
+      $inc: { pickaxe_level: 1 }, 
+      $set: { 
+        pickaxe_durability: 100 + (10 * 10), // Пример: увеличиваем макс прочность при апгрейде
+        pickaxe_max_durability: 100 + (10 * 10) 
+      } 
+    },
     { new: true }
   );
-  return { ...info, newLevel: p.pickaxe_level };
+
+  return { newLevel: p.pickaxe_level };
 }
-
-// ── Инвентарь железа ─────────────────────────────────────────
-async function addHardwareItem(userId, itemId, qty = 1) {
-  const p = await getPlayer(userId);
-  const current = p.hardware_inventory.get(itemId) || 0;
-  p.hardware_inventory.set(itemId, current + qty);
-  p.markModified('hardware_inventory');
-  await p.save();
-
-  // Автоматическая проверка коллекционера (10 уникальных предметов)
-  if (p.hardware_inventory.size >= 10) {
-    await giveAchievement(userId, 'collector');
-  }
-
-  // Проверка легендарки
-  const meta = ITEMS_DB[itemId];
-  if (meta && (meta.rarity === 'legendary' || meta.rarity === 'secret')) {
-    await giveAchievement(userId, 'legendary_find');
-  }
-
-  return current + qty;
-}
-
-async function removeHardwareItem(userId, itemId, qty = 1) {
-  const p = await getPlayer(userId);
-  const current = p.hardware_inventory.get(itemId) || 0;
-  if (current < qty) return false;
-  if (current - qty === 0) p.hardware_inventory.delete(itemId);
-  else p.hardware_inventory.set(itemId, current - qty);
-  p.markModified('hardware_inventory');
-  await p.save();
-  return true;
-}
-
-async function getHardwareInventory(userId) {
-  const p = await getPlayer(userId);
-  const result = [];
-  for (const [itemId, qty] of p.hardware_inventory.entries()) {
-    const meta = ITEMS_DB[itemId];
-    if (meta) result.push({ itemId, qty, meta });
-  }
-  return result;
-}
-
-function hasHardwareItem(playerOrInventory, itemId) {
-  if (!playerOrInventory) return false;
-  
-  // Поддержка и объекта Player, и Map
-  let inv = playerOrInventory.hardware_inventory || playerOrInventory;
-  if (inv instanceof Map) {
-    return (inv.get(itemId) || 0) > 0;
-  }
-  return (inv[itemId] || 0) > 0;
-}
-
-// ── [НАРАБОТКА] Суммарная мощность железа игрока ────────────
-async function calculateTotalPower(userId) {
-  const inventory = await getHardwareInventory(userId);
-  return inventory.reduce((total, item) => total + (item.meta.power * item.qty), 0);
 }
 
 // ── Экономика (юани) ─────────────────────────────────────────
@@ -459,6 +394,13 @@ async function checkProfCooldown(userId, type, durationMs) {
 }
 
 // ── Лимит кредитов (owner) ───────────────────────────────────
+const CreditLimitSchema = new mongoose.Schema({
+  userId:    { type: String, required: true, unique: true },
+  used:      { type: Number, default: 0 },
+  resetAt:   { type: Date, default: () => new Date(Date.now() + 30 * 60 * 1000) },
+});
+const CreditLimit = mongoose.model('CreditLimit', CreditLimitSchema);
+
 const LIMIT_PER_30MIN = 10000;
 async function checkAndUseLimit(userId, amount) {
   const now = new Date();
@@ -594,9 +536,6 @@ async function incLotteryCount(userId) {
     { $inc: { lotteryCount: 1 } },
     { upsert: true, new: true }
   );
-  if (s.lotteryCount >= 5) {
-    await giveAchievement(userId, 'gambler');
-  }
   return s.lotteryCount;
 }
 
@@ -604,9 +543,6 @@ async function incLotteryCount(userId) {
 // АУКЦИОН
 // ════════════════════════════════════════════════════════════
 async function createAuction(sellerId, itemId, quantity, price) {
-  const hasItem = await removeHardwareItem(sellerId, itemId, quantity);
-  if (!hasItem) return { error: 'Недостаточно предметов для продажи!' };
-
   let lotId;
   let attempts = 0;
   while (attempts < 10) {
@@ -615,121 +551,40 @@ async function createAuction(sellerId, itemId, quantity, price) {
     if (!exists) break;
     attempts++;
   }
-  
-  const auction = await Auction.create({ lotId, sellerId, itemId, quantity, price });
-  return { success: true, auction };
+  return Auction.create({ lotId, sellerId, itemId, quantity, price });
 }
 
 async function getActiveAuctions() {
-  return Auction.find({ active: true }).sort({ createdAt: -1 }).lean();
+  return Auction.find({ active: true }).sort({ createdAt: -1 });
 }
 
-async function getUserAuctionList(userId) {
-  return Auction.find({ sellerId: userId, active: true }).sort({ createdAt: -1 }).lean();
-}
-
-// [НАРАБОТКА] Атомарная покупка без race-condition
 async function buyAuction(lotId, buyerId) {
+  const lot = await Auction.findOne({ lotId, active: true });
+  if (!lot) return { error: 'Лот не найден или уже куплен.' };
+  if (lot.sellerId === buyerId) return { error: 'Нельзя купить свой лот!' };
+
   const buyerEco = await getEco(buyerId);
+  if (buyerEco.wallet < lot.price) return { error: `Недостаточно юаней! Нужно **${lot.price}**` };
 
-  // 1. Находим лот
-  const lotCheck = await Auction.findOne({ lotId, active: true });
-  if (!lotCheck) return { error: 'Лот не найден или уже куплен.' };
-  if (lotCheck.sellerId === buyerId) return { error: 'Нельзя купить свой лот!' };
-  if (buyerEco.wallet < lotCheck.price) return { error: `Недостаточно юаней! Нужно **${lotCheck.price}** 💴` };
-
-  // 2. Атомарно выкупаем лот (lock)
-  const lot = await Auction.findOneAndUpdate(
-    { lotId, active: true },
-    { $set: { active: false } },
-    { new: true }
-  );
-
-  if (!lot) return { error: 'Лот был куплен другим игроком доли секунды назад!' };
-
-  // 3. Выполняем финансовые операции
-  const tax = Math.ceil(lot.price * 0.02); // 2% налог
+  // Транзакция: списать у покупателя, зачислить продавцу (минус 2% налог)
+  const tax      = Math.ceil(lot.price * 0.02);
   const sellerGet = lot.price - tax;
 
   await addYuan(buyerId, -lot.price);
   await addYuan(lot.sellerId, sellerGet);
   await addHardwareItem(buyerId, lot.itemId, lot.quantity);
-
-  // Выдаем ачивки участникам
-  await giveAchievement(buyerId, 'trader');
-  await giveAchievement(lot.sellerId, 'trader');
+  await Auction.findByIdAndUpdate(lot._id, { active: false });
 
   return { success: true, lot, tax, sellerGet };
 }
 
 async function cancelAuction(lotId, userId) {
-  const lot = await Auction.findOneAndUpdate(
-    { lotId, sellerId: userId, active: true },
-    { $set: { active: false } },
-    { new: true }
-  );
-
-  if (!lot) return { error: 'Лот не найден или вы не являетесь его владельцем.' };
-
+  const lot = await Auction.findOne({ lotId, active: true });
+  if (!lot) return { error: 'Лот не найден.' };
+  if (lot.sellerId !== userId) return { error: 'Это не твой лот!' };
   await addHardwareItem(userId, lot.itemId, lot.quantity);
-  return { success: true, lot };
-}
-
-// ════════════════════════════════════════════════════════════
-// [НАРАБОТКИ] КОМПЛЕКСНЫЕ ХЕЛПЕРЫ
-// ════════════════════════════════════════════════════════════
-
-// Полный процесс открытия кейса с учётом денег и наград
-async function openCase(userId, caseId) {
-  const caseData = CASES_DB[caseId];
-  if (!caseData) return { error: 'Кейс не найден!' };
-
-  const eco = await getEco(userId);
-  if (eco.wallet < caseData.price) {
-    return { error: `Недостаточно юаней! Стоимость: **${caseData.price}** 💴 (У вас: ${eco.wallet})` };
-  }
-
-  const rolledItem = rollCaseItem(caseId);
-  if (!rolledItem) return { error: 'Ошибка при генерации предмета.' };
-
-  // Списание юаней и зачисление предмета
-  await addYuan(userId, -caseData.price);
-  await addHardwareItem(userId, rolledItem.id, 1);
-
-  return { success: true, item: rolledItem, price: caseData.price };
-}
-
-// Единый агрегированный профиль пользователя
-async function getUserStats(userId) {
-  const [player, eco, power, inventory, jailMs, injuryMs] = await Promise.all([
-    getPlayer(userId),
-    getEco(userId),
-    calculateTotalPower(userId),
-    getHardwareInventory(userId),
-    getJailRemaining(userId),
-    getInjuryRemaining(userId),
-  ]);
-
-  return {
-    userId,
-    credits: player.credits,
-    yuan: eco.wallet,
-    power,
-    inventoryCount: inventory.reduce((acc, item) => acc + item.qty, 0),
-    uniqueHardware: inventory.length,
-    achievementsCount: player.achievements.length,
-    pickaxe: {
-      level: player.pickaxe_level,
-      durability: player.pickaxe_durability,
-      maxDurability: player.pickaxe_max_durability,
-    },
-    status: {
-      inJail: jailMs > 0,
-      jailRemainingMs: jailMs,
-      isInjured: injuryMs > 0,
-      injuryRemainingMs: injuryMs,
-    }
-  };
+  await Auction.findByIdAndUpdate(lot._id, { active: false });
+  return { success: true };
 }
 
 // ════════════════════════════════════════════════════════════
@@ -757,12 +612,11 @@ module.exports = {
   upgradePickaxe,
   applyPickaxeUpgrade,
 
-  // Инвентарь железа и системные мощности
+  // Инвентарь железа
   addHardwareItem,
   removeHardwareItem,
   getHardwareInventory,
   hasHardwareItem,
-  calculateTotalPower,
 
   // Экономика
   getEco,
@@ -799,11 +653,6 @@ module.exports = {
   // Аукцион
   createAuction,
   getActiveAuctions,
-  getUserAuctionList,
   buyAuction,
   cancelAuction,
-
-  // [НАРАБОТКИ] Готовые системные процессы
-  openCase,
-  getUserStats,
 };
