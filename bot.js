@@ -1,17 +1,19 @@
-'use strict';
 const {
   Client, GatewayIntentBits, REST, Routes,
   SlashCommandBuilder, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  Collection,
 } = require('discord.js');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const {
-  connectDB,
-  ACHIEVEMENTS_LIST, ITEMS_DB, RARITY_META, CASES_DB, rollCaseItem,
+  connectDB, ACHIEVEMENTS_LIST,
   getCredits, addCredits,
   getEco, addYuan,
-  checkCooldown, checkProfCooldown, checkAndUseLimit,
+  checkCooldown, checkProfCooldown,
+  checkAndUseLimit,
   getJailRemaining, sendToJail,
   getInjuryRemaining, setInjury, cureInjury,
   giveAchievement,
@@ -20,40 +22,68 @@ const {
   incLotteryCount,
   getExamStreak, setExamStreak,
   getPlayer,
-  getPickaxeData, damagePickaxe, repairPickaxe, applyRepairPickaxe, upgradePickaxe, applyPickaxeUpgrade,
-  addHardwareItem, removeHardwareItem, getHardwareInventory,
-  createAuction, getActiveAuctions, buyAuction, cancelAuction,
 } = require('./database');
 
-// ════════════════════════════════════════════════════════════
-// КОНФИГУРАЦИЯ И ПАРАМЕТРЫ
-// ════════════════════════════════════════════════════════════
-const TOKEN          = process.env.TOKEN;
-const CLIENT_ID      = process.env.CLIENT_ID;
-const GUILD_ID       = process.env.GUILD_ID || '1151160668892975214';
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const OWNER_ID       = '1528109131704176822';
+// ========================================================
+const TOKEN     = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID  = process.env.GUILD_ID  || '1151160668892975214';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY; 
 
-const CREDIT_CMD_COOLDOWN_MS   = 30 * 1000;
-const WORK_COOLDOWN_MS         = 60 * 60 * 1000;
-const DAILY_COOLDOWN_MS        = 24 * 60 * 60 * 1000;
-const WHEEL_COOLDOWN_MS        = 24 * 60 * 60 * 1000;
-const EXAM_COOLDOWN_MS         = 5 * 60 * 1000;
-const VOTE_COOLDOWN_MS         = 60 * 60 * 1000;
-const ACTIVITY_COOLDOWN_MS     = 60 * 60 * 1000;
-const JAIL_MIN_MS              = 30 * 60 * 1000;
-const JAIL_MAX_MS              = 2 * 60 * 60 * 1000;
-const WORKER_DAY_MS            = 24 * 60 * 60 * 1000;
+const DEFAULT_CREDITS = 10000;
+const OWNER_ID = '1528109131704176822';
+
+const LIMIT_PER_30MIN       = 10000;
+const COOLDOWN_MS           = 30 * 60 * 1000;
+const CREDIT_CMD_COOLDOWN_MS = 30 * 1000;
+const WORK_COOLDOWN_MS      = 60 * 60 * 1000;
+const DAILY_COOLDOWN_MS     = 24 * 60 * 60 * 1000;
+const WHEEL_COOLDOWN_MS     = 24 * 60 * 60 * 1000;
+const EXAM_COOLDOWN_MS      = 60 * 60 * 1000;
+const VOTE_COOLDOWN_MS      = 60 * 60 * 1000;
+const ACTIVITY_COOLDOWN_MS  = 60 * 60 * 1000;
+const INJURY_MS             = 60 * 60 * 1000;
+const JAIL_MIN_MS           = 30 * 60 * 1000;
+const JAIL_MAX_MS           = 2 * 60 * 60 * 1000;
+const WORKER_DAY_MS         = 24 * 60 * 60 * 1000;
 const WORKER_OF_DAY_BONUS_CREDITS = 2000;
 const WORKER_OF_DAY_BONUS_YUAN    = 1000;
-const MINE_COOLDOWN_MS         = 5 * 1000;
+// ========================================================
 
-// Keep-alive веб-сервер
+// Keep-alive сервер для Render
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
-// ════════════════════════════════════════════════════════════
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ════════════════════════════════════════════════════════════
+// Инициализация Discord клиента
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+client.commands = new Collection();
+
+// ── Функция загрузки команд из папки commands ───────────────
+function loadCommandFiles() {
+  const commandsPath = path.join(__dirname, 'commands');
+  if (fs.existsSync(commandsPath)) {
+    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+    for (const file of commandFiles) {
+      const filePath = path.join(commandsPath, file);
+      delete require.cache[require.resolve(filePath)];
+      const command = require(filePath);
+      if (command && 'data' in command && 'execute' in command) {
+        client.commands.set(command.data.name, command);
+        console.log(`✅ Загружен файл команды из папки commands: /${command.data.name}`);
+      } else {
+        console.warn(`⚠️ В файле ${file} отсутствует "data" или "execute".`);
+      }
+    }
+  }
+}
+
+// ── Вспомогательные функции ──────────────────────────────────
 function getRating(credits) {
   if (credits >= 20000) return { label: '🏆 Образцовый гражданин', color: 0xFFD700, legend: '🐱 получать **кошка жена**\n🍚 получать **миска риса**' };
   if (credits >= 10000) return { label: '⭐ Отличник',            color: 0x00FF88, legend: null };
@@ -77,6 +107,7 @@ function formatTime(ms) {
   return mins > 0 ? `${mins} мин. ${secs} сек.` : `${secs} сек.`;
 }
 
+// Названия кирок в зависимости от уровня
 function getPickaxeName(level) {
   if (level === 1) return '🪨 Деревянная кирка';
   if (level === 2) return '🛠️ Каменная кирка';
@@ -86,159 +117,157 @@ function getPickaxeName(level) {
   return 'Кирка';
 }
 
-function durabilityBar(current, max, length = 20) {
-  const filled = Math.round((current / max) * length);
-  const empty  = length - filled;
-  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${current}/${max}`;
-}
-
-function buildInventoryTable(items) {
-  if (items.length === 0) return '```\n  Инвентарь пуст\n```';
-
-  const COL_ID    = 14;
-  const COL_NAME  = 26;
-  const COL_QTY   = 5;
-  const COL_RAR   = 10;
-
-  const pad = (str, n) => String(str).padEnd(n).slice(0, n);
-  const header = `${pad('ID', COL_ID)} ${pad('Название', COL_NAME)} ${pad('Кол', COL_QTY)} ${pad('Ред-сть', COL_RAR)}`;
-  const divider = '─'.repeat(header.length);
-
-  const rows = items.map(({ itemId, qty, meta }) =>
-    `${pad(itemId, COL_ID)} ${pad(meta.name.replace(/\p{Emoji}/gu, ''), COL_NAME)} ${pad(qty, COL_QTY)} ${pad(RARITY_META[meta.rarity]?.label || meta.rarity, COL_RAR)}`
-  );
-
-  return `\`\`\`\n${header}\n${divider}\n${rows.join('\n')}\n\`\`\``;
-}
-
-function buildAuctionTable(lots) {
-  if (lots.length === 0) return '```\n  Активных лотов нет\n```';
-
-  const COL_ID    = 8;
-  const COL_ITEM  = 24;
-  const COL_QTY   = 5;
-  const COL_PRICE = 10;
-
-  const pad = (str, n) => String(str).padEnd(n).slice(0, n);
-  const header  = `${pad('Лот', COL_ID)} ${pad('Предмет', COL_ITEM)} ${pad('Кол', COL_QTY)} ${pad('Цена (¥)', COL_PRICE)}`;
-  const divider = '─'.repeat(header.length);
-
-  const rows = lots.map(lot => {
-    const meta = ITEMS_DB[lot.itemId];
-    const name = meta ? meta.name.replace(/\p{Emoji}/gu, '').trim() : lot.itemId;
-    return `${pad(lot.lotId, COL_ID)} ${pad(name, COL_ITEM)} ${pad(lot.quantity, COL_QTY)} ${pad(lot.price, COL_PRICE)}`;
-  });
-
-  return `\`\`\`\n${header}\n${divider}\n${rows.join('\n')}\n\`\`\``;
-}
-
-// ── Профессии ────────────────────────────────────────────────
+// ── Профессии ──────────────────────────────────────────────
 const PROFESSIONS = {
   accountant: { name: '📊 Бухгалтер', minPay: 200, maxPay: 400,  riskChance: 2,  riskLoss: 100,  cooldown: 1800000 },
   spy:        { name: '🕵️ Шпион',     minPay: 500, maxPay: 2000, riskChance: 35, riskLoss: 1200, cooldown: 7200000 },
 };
 
+// ── Предметы партийной шахты ──────────────────────────────────
+const MINE_ITEMS = [
+  { id: 'stone',   name: '🪨 Камень',  chance: 50, yuanMin: 50,   yuanMax: 150,  injuryChance: 25 },
+  { id: 'coal',    name: '⚫ Уголь',   chance: 25, yuanMin: 150,  yuanMax: 350,  injuryChance: 35 },
+  { id: 'iron',    name: '⛓️ Железо',  chance: 15, yuanMin: 400,  yuanMax: 800,  injuryChance: 0  },
+  { id: 'gold',    name: '🥇 Золото',  chance: 7,  yuanMin: 900,  yuanMax: 1500, injuryChance: 0  },
+  { id: 'diamond', name: '💎 Алмаз',   chance: 3,  yuanMin: 1500, yuanMax: 2500, injuryChance: 0  },
+];
+
+function rollMineItem() {
+  const total = MINE_ITEMS.reduce((s, x) => s + x.chance, 0);
+  let rand = Math.random() * total;
+  for (const item of MINE_ITEMS) { rand -= item.chance; if (rand <= 0) return item; }
+  return MINE_ITEMS[0];
+}
+
 // ── Активности ───────────────────────────────────────────────
 const ACTIVITIES = {
-  flag:   { name: '🇨🇳 Помахать флагом Партии на площади', min: 100, max: 300 },
-  clean:  { name: '🧹 Убрать двор соседа',                 min: 150, max: 350 },
-  poster: { name: '📢 Расклеить агитационные плакаты',     min: 200, max: 400 },
-  elder:  { name: '👵 Помочь бабушке перейти дорогу',      min: 250, max: 450 },
-  song:   { name: '🎤 Спеть гимн Партии перед комитетом',  min: 300, max: 500 },
+  flag:   { name: '🇨🇳 Помахать флагом Партии на площади',    min: 100, max: 300 },
+  clean:  { name: '🧹 Убрать двор соседа',                    min: 150, max: 350 },
+  poster: { name: '📢 Расклеить агитационные плакаты',        min: 200, max: 400 },
+  elder:  { name: '👵 Помочь бабушке перейти дорогу',         min: 250, max: 450 },
+  song:   { name: '🎤 Спеть гимн Партии перед комитетом',     min: 300, max: 500 },
 };
 
 // ── Партийные экзамены ───────────────────────────────────────
 const EXAM_QUESTIONS = [
-  { q: 'Кто основал Коммунистическую партию Китая?',        answers: ['мао', 'мао цзэдун', 'мао цзедун'],                       hint: 'Великий Кормчий...' },
-  { q: 'Сколько звёзд на флаге Китая?',                     answers: ['5', 'пять'],                                             hint: 'Считай внимательно...' },
-  { q: 'Как называется столица Китая?',                      answers: ['пекин', 'beijing'],                                      hint: 'Это не Шанхай...' },
-  { q: 'Как переводится слово "юань"?',                      answers: ['круглый', 'круг', 'округлый'],                           hint: 'Думай о форме монеты...' },
-  { q: 'Сколько человек живёт в Китае? (примерно, в млрд)', answers: ['1.4', '1,4', '1.4 миллиарда', 'полтора'],               hint: 'Больше миллиарда...' },
-  { q: 'Как называется великая стена в Китае?',              answers: ['великая китайская стена', 'китайская стена', 'великая стена'], hint: 'Она очень длинная...' },
-  { q: 'Назови любой китайский праздник',                    answers: ['новый год', 'китайский новый год', 'праздник весны', 'день труда', 'день республики', 'день победы'], hint: 'Их много...' },
-  { q: 'Какое животное символизирует 2024 год по кит. кал.?', answers: ['дракон', 'ракон'],                                    hint: 'Оно огнедышащее...' },
+  { q: 'Кто основал Коммунистическую партию Китая?',          answers: ['мао', 'мао цзэдун', 'мао цзедун'],           hint: 'Великий Кормчий...' },
+  { q: 'Сколько звёзд на флаге Китая?',                       answers: ['5', 'пять'],                                 hint: 'Считай внимательно...' },
+  { q: 'Как называется столица Китая?',                        answers: ['пекин', 'beijing'],                          hint: 'Это не Шанхай...' },
+  { q: 'Как переводится слово "юань"?',                        answers: ['круглый', 'круг', 'округлый'],               hint: 'Думай о форме монеты...' },
+  { q: 'Сколько человек живёт в Китае? (примерно, в млрд)',    answers: ['1.4', '1,4', '1.4 миллиарда', 'полтора'],   hint: 'Больше миллиарда...' },
+  { q: 'Как называется великая стена в Китае?',                answers: ['великая китайская стена', 'китайская стена', 'великая стена'], hint: 'Она очень длинная...' },
+  { q: 'Назови любой китайский праздник',                      answers: ['новый год', 'китайский новый год', 'праздник весны', 'день труда', 'день республики', 'день победы'], hint: 'Их много...' },
+  { q: 'Какое животное символизирует 2024 год по кит. кал.?', answers: ['дракон', 'ракон'],                           hint: 'Оно огнедышащее...' },
 ];
 
 // ── DeepSeek API ─────────────────────────────────────────────
 async function askDeepSeek(prompt) {
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+    },
     body: JSON.stringify({
       model: 'deepseek-chat',
       messages: [
-        { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Иногда хвали Партию. Будь немного абсурдным и шуточным. Отвечай на том языке, на котором к тебе обращаются.' },
+        {
+          role: 'system',
+          content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Иногда хвали Партию. Будь немного абсурдным и шуточным. Отвечай на том языке, на котором к тебе обращаются.',
+        },
         { role: 'user', content: prompt },
       ],
       max_tokens: 500,
     }),
   });
+
   if (!response.ok) {
     const err = await response.text();
     throw new Error(`DeepSeek API вернул ошибку ${response.status}: ${err}`);
   }
+
   const data = await response.json();
   return data.choices?.[0]?.message?.content || '🤖 Партийный советник молчит...';
 }
 
-// ════════════════════════════════════════════════════════════
-// РЕГИСТРАЦИЯ КОМАНД
-// ════════════════════════════════════════════════════════════
+// ── Регистрация команд ───────────────────────────────────────
 async function registerCommands() {
-  const commands = [
+  loadCommandFiles();
+
+  const builtInCommands = [
     new SlashCommandBuilder()
-      .setName('socialcredit').setDescription('Добавить или забрать соц. кредиты у пользователя')
-      .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true))
-      .addIntegerOption(o => o.setName('amount').setDescription('Количество (отрицательное = забрать)').setRequired(true)),
+      .setName('socialcredit')
+      .setDescription('Добавить или забрать социальные кредиты у пользователя')
+      .addUserOption(opt => opt.setName('user').setDescription('Пользователь').setRequired(true))
+      .addIntegerOption(opt => opt.setName('amount').setDescription('Количество кредитов (отрицательное = забрать)').setRequired(true)),
 
     new SlashCommandBuilder()
-      .setName('socialstats').setDescription('Показать соц. рейтинг пользователя')
-      .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true)),
+      .setName('socialstats')
+      .setDescription('Показать социальный рейтинг пользователя')
+      .addUserOption(opt => opt.setName('user').setDescription('Пользователь').setRequired(true)),
 
-    new SlashCommandBuilder().setName('socialleaderboard').setDescription('Топ-10 граждан по соц. рейтингу'),
-    new SlashCommandBuilder().setName('resetall').setDescription('Сбросить все данные (только Создатель)'),
-    new SlashCommandBuilder().setName('help_v2_0').setDescription('Справочник по экономике Партии v2.0'),
+    new SlashCommandBuilder().setName('socialleaderboard').setDescription('Топ-10 граждан по социальному рейтингу'),
+    new SlashCommandBuilder().setName('resetall').setDescription('Сбросить все данные (только для Создателя)'),
+
+    new SlashCommandBuilder().setName('help_v2_0').setDescription('Справочник по экономике Партии'),
     new SlashCommandBuilder().setName('work_v2_0').setDescription('Работать на заводе и получить юани'),
+    new SlashCommandBuilder().setName('mine').setDescription('⛏️ Отправиться в забой на Партийную Шахту'),
+    new SlashCommandBuilder().setName('case').setDescription('📦 Открыть секретный Партийный Кейс'),
     new SlashCommandBuilder().setName('partyshop_v2_0').setDescription('Посмотреть магазин Партии'),
-    new SlashCommandBuilder().setName('profile_v2_0').setDescription('Посмотреть свой паспорт и баланс'),
+    new SlashCommandBuilder().setName('profile_v2_0').setDescription('Посмотреть свой паспорт и баланс юаней'),
+
     new SlashCommandBuilder()
-      .setName('buy_v2_0').setDescription('Купить предмет или улучшить кирку в магазине Партии')
-      .addStringOption(o => o.setName('item').setDescription('Товар').setRequired(true)
+      .setName('buy_v2_0')
+      .setDescription('Купить предмет или улучшить кирку в магазине Партии')
+      .addStringOption(opt => opt
+        .setName('item')
+        .setDescription('Выберите товар')
+        .setRequired(true)
         .addChoices(
-          { name: '🐱 Кошка-жена (50 000 юаней)', value: 'cat_wife'  },
-          { name: '🍚 Миска риса (5 000 юаней)',   value: 'rice_bowl' },
-          { name: '🎟 Лотерея (1 000 юаней)',      value: 'ticket'    },
-          { name: '⛏️ Улучшить кирку (устаревш.)', value: 'pickaxe'   }
+          { name: '🐱 Кошка-жена (50 000 юаней)',  value: 'cat_wife'  },
+          { name: '🍚 Миска риса (5 000 юаней)',    value: 'rice_bowl' },
+          { name: '🎟 Лотерея (1 000 юаней)',       value: 'ticket'    },
+          { name: '⛏️ Улучшить кирку (Уровень * 5 000 юаней)', value: 'pickaxe' }
         )),
 
     new SlashCommandBuilder()
-      .setName('steal_v2_0').setDescription('Украсть юани у гражданина (-500 кред. при провале)')
-      .addUserOption(o => o.setName('target').setDescription('Цель кражи').setRequired(true))
-      .addIntegerOption(o => o.setName('amount').setDescription('Сколько юаней украсть').setRequired(true)),
+      .setName('steal_v2_0')
+      .setDescription('Украсть юани у гражданина (штраф -500 соц. кредитов при провале)')
+      .addUserOption(opt => opt.setName('target').setDescription('Цель кражи').setRequired(true))
+      .addIntegerOption(opt => opt.setName('amount').setDescription('Сколько юаней украсть').setRequired(true)),
 
     new SlashCommandBuilder().setName('daily_v2_0').setDescription('Получить ежедневную награду от Партии'),
     new SlashCommandBuilder().setName('wheel_v2_0').setDescription('Покрутить колесо фортуны (раз в сутки)'),
 
     new SlashCommandBuilder()
-      .setName('vote_v2_0').setDescription('Устроить голосование за наказание гражданина')
-      .addUserOption(o => o.setName('target').setDescription('Кого судить').setRequired(true))
-      .addStringOption(o => o.setName('reason').setDescription('Причина обвинения').setRequired(true)),
+      .setName('vote_v2_0')
+      .setDescription('Устроить голосование за наказание гражданина')
+      .addUserOption(opt => opt.setName('target').setDescription('Кого судить').setRequired(true))
+      .addStringOption(opt => opt.setName('reason').setDescription('Причина обвинения').setRequired(true)),
 
     new SlashCommandBuilder().setName('exam_v2_0').setDescription('Сдать партийный экзамен и получить кредиты'),
 
     new SlashCommandBuilder()
-      .setName('profession_v2_0').setDescription('Выбрать профессию и работать по специальности')
-      .addStringOption(o => o.setName('job').setDescription('Профессия').setRequired(true)
+      .setName('profession_v2_0')
+      .setDescription('Выбрать профессию и работать по специальности')
+      .addStringOption(opt => opt
+        .setName('job')
+        .setDescription('Выберите профессию')
+        .setRequired(true)
         .addChoices(
           { name: '📊 Бухгалтер — стабильный доход, низкий риск', value: 'accountant' },
-          { name: '🕵️ Шпион — огромный доход, огромный риск',    value: 'spy'         }
+          { name: '🕵️ Шпион — огромный доход, огромный риск',    value: 'spy'        }
         )),
 
     new SlashCommandBuilder().setName('achievements_v2_0').setDescription('Посмотреть свои достижения'),
 
     new SlashCommandBuilder()
-      .setName('activity_v2_0').setDescription('Заняться общественной деятельностью (раз в час)')
-      .addStringOption(o => o.setName('activity').setDescription('Активность').setRequired(true)
+      .setName('activity_v2_0')
+      .setDescription('Заняться общественной деятельностью (раз в час)')
+      .addStringOption(opt => opt
+        .setName('activity')
+        .setDescription('Выберите активность')
+        .setRequired(true)
         .addChoices(
           { name: '🇨🇳 Помахать флагом Партии на площади', value: 'flag'   },
           { name: '🧹 Убрать двор соседа',                 value: 'clean'  },
@@ -250,116 +279,101 @@ async function registerCommands() {
     new SlashCommandBuilder().setName('workerboard_v2_0').setDescription('Топ работников дня'),
 
     new SlashCommandBuilder()
-      .setName('ask_deepseek').setDescription('Задать вопрос Партийному советнику (AI DeepSeek)')
-      .addStringOption(o => o.setName('question').setDescription('Твой вопрос к Партии').setRequired(true).setMaxLength(500)),
+      .setName('ask_deepseek')
+      .setDescription('Задать вопрос Партийному советнику (AI DeepSeek)')
+      .addStringOption(opt => opt
+        .setName('question')
+        .setDescription('Твой вопрос к Партии')
+        .setRequired(true)
+        .setMaxLength(500)),
+  ].map(cmd => cmd.toJSON());
 
-    // Система Шахты, Кейсов и Аукциона
-    new SlashCommandBuilder().setName('mine').setDescription('⛏️ Ударить киркой в Партийной Шахте (кулдаун 5 сек)'),
-    new SlashCommandBuilder().setName('pickaxe').setDescription('🔧 Состояние кирки: починить или улучшить'),
-    new SlashCommandBuilder().setName('case').setDescription('📦 Кейсы Партийного оборудования — шансы и открытие'),
-    new SlashCommandBuilder().setName('inv').setDescription('🗂️ Ваш инвентарь серверного оборудования')
-      .addUserOption(o => o.setName('user').setDescription('Другой пользователь (необязательно)').setRequired(false)),
+  // Автоматически добавляем все файлы из client.commands к регистрации
+  const fileCommands = [];
+  for (const command of client.commands.values()) {
+    if (command.data) {
+      fileCommands.push(command.data.toJSON());
+    }
+  }
 
-    new SlashCommandBuilder().setName('ah').setDescription('🏪 Публичный аукцион — список активных лотов'),
-    new SlashCommandBuilder().setName('ah_sell').setDescription('📤 Выставить предмет на аукцион')
-      .addStringOption(o => o.setName('item_id').setDescription('ID предмета (из /inv)').setRequired(true))
-      .addIntegerOption(o => o.setName('price').setDescription('Цена в юанях').setRequired(true))
-      .addIntegerOption(o => o.setName('quantity').setDescription('Количество (по умолчанию 1)').setRequired(false)),
-
-    new SlashCommandBuilder().setName('ah_buy').setDescription('📥 Купить предмет с аукциона по ID лота')
-      .addStringOption(o => o.setName('lot_id').setDescription('ID лота (6 символов)').setRequired(true)),
-
-    new SlashCommandBuilder().setName('ah_cancel').setDescription('❌ Снять свой лот с аукциона')
-      .addStringOption(o => o.setName('lot_id').setDescription('ID лота').setRequired(true)),
-
-    new SlashCommandBuilder().setName('trade').setDescription('🤝 Предложить прямой обмен предметом с другим игроком')
-      .addUserOption(o => o.setName('user').setDescription('Покупатель').setRequired(true))
-      .addStringOption(o => o.setName('item_id').setDescription('ID предмета из твоего инвентаря').setRequired(true))
-      .addIntegerOption(o => o.setName('price').setDescription('Цена в юанях').setRequired(true))
-      .addIntegerOption(o => o.setName('quantity').setDescription('Количество (по умолчанию 1)').setRequired(false)),
-
-  ].map(c => c.toJSON());
+  const allCommands = [...builtInCommands, ...fileCommands];
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  try { await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] }); } catch { }
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+  } catch (e) {
+    console.error('⚠️ Не удалось очистить глобальные команды:', e.message);
+  }
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: allCommands });
   console.log('✅ Команды зарегистрированы!');
 }
 
-// ════════════════════════════════════════════════════════════
-// КЛИЕНТ
-// ════════════════════════════════════════════════════════════
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-});
-
-const mineCooldowns = new Map();
 const examCooldowns = new Map();
+const mineCooldowns = new Map();
 
 client.on('ready', () => {
   console.log(`🤖 Бот запущен как ${client.user.tag}`);
-  checkWorkerOfDayReset(client, GUILD_ID, WORKER_DAY_MS, WORKER_OF_DAY_BONUS_CREDITS, WORKER_OF_DAY_BONUS_YUAN).catch(console.error);
+  checkWorkerOfDayReset(client, GUILD_ID, WORKER_DAY_MS, WORKER_OF_DAY_BONUS_CREDITS, WORKER_OF_DAY_BONUS_YUAN).catch(e => console.error(e));
   setInterval(
-    () => checkWorkerOfDayReset(client, GUILD_ID, WORKER_DAY_MS, WORKER_OF_DAY_BONUS_CREDITS, WORKER_OF_DAY_BONUS_YUAN).catch(console.error),
+    () => checkWorkerOfDayReset(client, GUILD_ID, WORKER_DAY_MS, WORKER_OF_DAY_BONUS_CREDITS, WORKER_OF_DAY_BONUS_YUAN).catch(e => console.error(e)),
     15 * 60 * 1000
   );
 });
 
-// ════════════════════════════════════════════════════════════
-// ОБРАБОТЧИК ВЗАИМОДЕЙСТВИЙ
-// ════════════════════════════════════════════════════════════
+// ── Главный обработчик взаимодействия (Slash Commands) ─────
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand() && !interaction.isButton()) return;
-  const userId = interaction.user?.id || interaction.member?.user?.id;
+  if (!interaction.isChatInputCommand()) return;
+  const userId = interaction.user.id;
 
-  // ── SLASH COMMANDS ───────────────────────────────────────
-  if (interaction.isChatInputCommand()) {
+  console.log(`👉 Вызвана команда: /${interaction.commandName} пользователем ${interaction.user.tag}`);
 
+  // 1. Проверяем, есть ли команда в отдельном файле из папки commands
+  const externalCommand = client.commands.get(interaction.commandName);
+  if (externalCommand) {
+    try {
+      await externalCommand.execute(interaction);
+      return;
+    } catch (error) {
+      console.error(`❌ ОШИБКА в файле команды /${interaction.commandName}:`, error);
+      const errorPayload = { content: 'Произошла ошибка при выполнении команды!', flags: 64 };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(errorPayload).catch(() => {});
+      } else {
+        await interaction.reply(errorPayload).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  // 2. Выполнение старых команд, написанных прямо в bot.js
+  try {
+    // ── /help_v2_0 ──────────────────────────────────────────
     if (interaction.commandName === 'help_v2_0') {
-      const mineSection = [
-        '```',
-        '⛏️  ШАХТА И СНАРЯЖЕНИЕ',
-        '────────────────────────────────────',
-        '/mine          Удар киркой (кд: 5 сек)',
-        '/pickaxe       Статус, починка, апгрейд кирки',
-        '/case          Кейсы оборудования (шансы / открытие)',
-        '/inv           Инвентарь серверного железа',
-        '',
-        '🏪  ТОРГОВЛЯ',
-        '────────────────────────────────────',
-        '/ah            Список лотов аукциона',
-        '/ah_sell       Выставить предмет на продажу',
-        '/ah_buy        Купить лот по ID',
-        '/ah_cancel     Снять свой лот с продажи',
-        '/trade         Прямой обмен с игроком',
-        '```',
-      ].join('\n');
-
       const embed = new EmbedBuilder()
         .setColor(0xED2939)
         .setTitle('📕 Справочник Партии v2.0')
         .addFields(
-          { name: '💰 Заработок',       value: '`/work_v2_0` — завод (раз в час)\n`/mine` — шахта (кд 5 сек)\n`/profession_v2_0` — по специальности\n`/daily_v2_0` — ежедневная награда\n`/activity_v2_0` — общественная деятельность', inline: false },
-          { name: '🎮 Развлечения',     value: '`/wheel_v2_0` — колесо фортуны\n`/exam_v2_0` — партийный экзамен\n`/case` — кейсы оборудования\n`/vote_v2_0` — народный суд', inline: false },
-          { name: '🛒 Магазин',         value: '`/partyshop_v2_0` — товары\n`/buy_v2_0` — купить предмет', inline: false },
-          { name: '🥷 Риск',            value: '`/steal_v2_0` — украсть юани', inline: false },
-          { name: '👤 Профиль',         value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения\n`/workerboard_v2_0` — топ дня\n`/inv` — инвентарь', inline: false },
-          { name: '⛏️⚙️ Шахта и торговля', value: mineSection, inline: false },
-          { name: '🤖 AI Советник',     value: '`/ask_deepseek` — DeepSeek AI', inline: false },
+          { name: '💰 Заработок',      value: '`/work_v2_0` — завод (раз в час)\n`/mine` — партийная шахта (раз в 30 мин)\n`/profession_v2_0` — работа по специальности\n`/daily_v2_0` — ежедневная награда\n`/activity_v2_0` — общественная деятельность (раз в час)', inline: false },
+          { name: '🎮 Развлечения',    value: '`/wheel_v2_0` — колесо фортуны\n`/exam_v2_0` — партийный экзамен\n`/case` — партийный кейс\n`/vote_v2_0` — narodny суд', inline: false },
+          { name: '🛒 Магазин',        value: '`/partyshop_v2_0` — товары и кирки\n`/buy_v2_0` — купить / улучшить', inline: false },
+          { name: '🥷 Риск',           value: '`/steal_v2_0` — украсть юани', inline: false },
+          { name: '👤 Профиль',        value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения\n`/workerboard_v2_0` — топ работников дня', inline: false },
+          { name: '🤖 AI Советник',    value: '`/ask_deepseek` — задать вопрос Партийному советнику (DeepSeek AI)', inline: false },
         );
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'daily_v2_0') {
+    // ── /daily_v2_0 ─────────────────────────────────────────
+    else if (interaction.commandName === 'daily_v2_0') {
       const cd = await checkCooldown(userId, 'dailyCooldown', DAILY_COOLDOWN_MS);
-      if (!cd.allowed) return interaction.reply({ content: `⏳ Следующая награда через **${formatTime(cd.waitMs)}**.`, flags: 64 });
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Ты уже получил сегодняшнюю награду! Следующая через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
       const tasks = [
-        { text: 'Партия благодарит за верность!', credits: 500,  yuan: 200 },
-        { text: 'Ты примерный гражданин!',        credits: 300,  yuan: 500 },
-        { text: 'Партия отметила твой вклад!',    credits: 1000, yuan: 100 },
-        { text: 'Ежедневный паёк выдан!',         credits: 200,  yuan: 300 },
-        { text: 'Партия наблюдает — и одобряет!', credits: 700,  yuan: 400 },
+        { text: 'Партия благодарит за верность!',   credits: 500,  yuan: 200 },
+        { text: 'Ты примерный гражданин!',           credits: 300,  yuan: 500 },
+        { text: 'Партия отметила твой вклад!',       credits: 1000, yuan: 100 },
+        { text: 'Ежедневный паёк выдан!',            credits: 200,  yuan: 300 },
+        { text: 'Партия наблюдает — и одобряет!',    credits: 700,  yuan: 400 },
       ];
       const task = tasks[Math.floor(Math.random() * tasks.length)];
       await addCredits(userId, task.credits);
@@ -369,12 +383,13 @@ client.on('interactionCreate', async interaction => {
         .setColor(0xED2939)
         .setTitle('📦 Ежедневная награда от Партии')
         .setDescription(`**${task.text}**\n\n⭐ +${task.credits} соц. кредитов\n💴 +${task.yuan} юаней`);
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'wheel_v2_0') {
+    // ── /wheel_v2_0 ─────────────────────────────────────────
+    else if (interaction.commandName === 'wheel_v2_0') {
       const cd = await checkCooldown(userId, 'wheelCooldown', WHEEL_COOLDOWN_MS);
-      if (!cd.allowed) return interaction.reply({ content: `⏳ Следующий шанс через **${formatTime(cd.waitMs)}**.`, flags: 64 });
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Колесо ещё крутится! Следующий шанс через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
       const sectors = [
         { label: '💀 ПОЗОР!',           credits: -1000, yuan: 0,    color: 0xFF0000, chance: 10 },
@@ -392,7 +407,7 @@ client.on('interactionCreate', async interaction => {
       for (const s of sectors) { rand -= s.chance; if (rand <= 0) { result = s; break; } }
 
       const spinning = ['🎡', '🌀', '💫', '🎯'];
-      await interaction.reply({ content: `${spinning[0]} **Колесо крутится...** `, fetchReply: true });
+      await interaction.reply({ content: `${spinning[0]} **Колесо крутится...**`, fetchReply: true });
       for (let i = 1; i < spinning.length; i++) {
         await new Promise(r => setTimeout(r, 800));
         await interaction.editReply({ content: `${spinning[i]} **Колесо крутится...** [${i}/3]` });
@@ -415,377 +430,189 @@ client.on('interactionCreate', async interaction => {
           `${result.credits > 0 ? `⭐ +${result.credits} соц. кредитов` : result.credits < 0 ? `⭐ ${result.credits} соц. кредитов` : '⭐ Без изменений'}\n` +
           `${result.yuan > 0 ? `💴 +${result.yuan} юаней` : ''}` + achMsg
         );
-      return interaction.editReply({ content: '', embeds: [embed] });
+      await interaction.editReply({ content: '', embeds: [embed] });
     }
 
-    if (interaction.commandName === 'exam_v2_0') {
+    // ── /exam_v2_0 ──────────────────────────────────────────
+    else if (interaction.commandName === 'exam_v2_0') {
+      const cooldownTime = 5 * 60 * 1000; 
       const now = Date.now();
+      
       if (examCooldowns.has(userId)) {
-        const exp = examCooldowns.get(userId) + EXAM_COOLDOWN_MS;
-        if (now < exp) {
-          const left = Math.ceil((exp - now) / 1000);
-          const embed = new EmbedBuilder().setColor(0xFFCC00).setTitle('⏳ Рано для нового экзамена!')
-            .setDescription(`Подожди ещё **${Math.floor(left / 60)} мин. ${left % 60} сек.**`);
-          return interaction.reply({ embeds: [embed], ephemeral: true });
+        const expirationTime = examCooldowns.get(userId) + cooldownTime;
+        if (now < expirationTime) {
+          const timeLeft = Math.ceil((expirationTime - now) / 1000); 
+          const minutes = Math.floor(timeLeft / 60);
+          const seconds = timeLeft % 60;
+          const cooldownEmbed = new EmbedBuilder()
+            .setColor(0xFFCC00)
+            .setTitle('⏳ Рано для нового экзамена!')
+            .setDescription(`Партия требует времени на подготовку вопросов. Подожди ещё **${minutes} мин. ${seconds} сек.** перед следующей попыткой.`);
+          return await interaction.reply({ embeds: [cooldownEmbed], flags: 64 });
         }
       }
+
       examCooldowns.set(userId, now);
 
       const q = EXAM_QUESTIONS[Math.floor(Math.random() * EXAM_QUESTIONS.length)];
-      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('📚 Партийный экзамен')
+      const embed = new EmbedBuilder()
+        .setColor(0xED2939)
+        .setTitle('📚 Партийный экзамен')
         .setDescription(`**Вопрос:** ${q.q}\n\n_Подсказка: ${q.hint}_\n\nУ тебя **60 секунд** — напиши ответ в чат!`);
       await interaction.reply({ embeds: [embed] });
 
       try {
         const filter = m => m.author.id === userId;
         const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
-        const answer  = collected.first().content.toLowerCase().trim();
+        const answer = collected.first().content.toLowerCase().trim();
         const correct = q.answers.some(a => answer.includes(a));
 
         if (correct) {
           const reward = Math.floor(Math.random() * 1001) + 500;
           await addCredits(userId, reward);
           await addYuan(userId, 200);
+
           let streak = await getExamStreak(userId);
           streak++;
           await setExamStreak(userId, streak);
+
           let achMsg = '';
           if (streak >= 3) {
             const ach = await giveAchievement(userId, 'exam_ace');
             if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
             await setExamStreak(userId, 0);
           }
-          const winEmbed = new EmbedBuilder().setColor(0x00FF88).setTitle('✅ Правильно! Партия одобряет!')
-            .setDescription(`⭐ +${reward} соц. кредитов\n💴 +200 юаней` + achMsg);
-          return interaction.followUp({ embeds: [winEmbed] });
+
+          const winEmbed = new EmbedBuilder()
+            .setColor(0x00FF88)
+            .setTitle('✅ Правильно! Партия одобряет!')
+            .setDescription(`Ответ принят!\n⭐ +${reward} соц. кредитов\n💴 +200 юаней` + achMsg);
+          await interaction.followUp({ embeds: [winEmbed] });
         } else {
           await addCredits(userId, -300);
           await setExamStreak(userId, 0);
-          const loseEmbed = new EmbedBuilder().setColor(0xFF0000).setTitle('❌ Неверно! Позор!')
+          const loseEmbed = new EmbedBuilder()
+            .setColor(0xFF0000)
+            .setTitle('❌ Неверно! Позор!')
             .setDescription(`Правильный ответ: **${q.answers[0]}**\n⭐ -300 соц. кредитов`);
-          return interaction.followUp({ embeds: [loseEmbed] });
+          await interaction.followUp({ embeds: [loseEmbed] });
         }
       } catch {
-        const timeEmbed = new EmbedBuilder().setColor(0x888888).setTitle('⏰ Время вышло!')
-          .setDescription(`Правильный ответ: **${q.answers[0]}**`);
-        return interaction.followUp({ embeds: [timeEmbed] });
+        const timeEmbed = new EmbedBuilder().setColor(0x888888).setTitle('⏰ Время вышло!').setDescription(`Правильный ответ: **${q.answers[0]}**`);
+        await interaction.followUp({ embeds: [timeEmbed] });
       }
     }
 
-    if (interaction.commandName === 'mine') {
+    // ── /mine (Партийная Шахта) ─────────────────────────────
+    else if (interaction.commandName === 'mine') {
+      const cooldownTime = 30 * 60 * 1000; 
       const now = Date.now();
 
-      const jailLeft   = await getJailRemaining(userId);
-      if (jailLeft > 0) return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**.`, flags: 64 });
+      const jailLeft = await getJailRemaining(userId);
+      if (jailLeft > 0) return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**. Работать нельзя.`, flags: 64 });
+
       const injuryLeft = await getInjuryRemaining(userId);
-      if (injuryLeft > 0) return interaction.reply({ content: `🩹 Ты травмирован! До выздоровления: **${formatTime(injuryLeft)}**.`, flags: 64 });
+      if (injuryLeft > 0) return interaction.reply({ content: `🩹 Ты травмирован! До выздоровления: **${formatTime(injuryLeft)}**. Работать нельзя.`, flags: 64 });
 
       if (mineCooldowns.has(userId)) {
-        const exp = mineCooldowns.get(userId) + MINE_COOLDOWN_MS;
-        if (now < exp) {
-          const left = Math.ceil((exp - now) / 1000);
-          return interaction.reply({ content: `⏳ Ещё устал! Подожди **${left} сек.**`, flags: 64 });
+        const expirationTime = mineCooldowns.get(userId) + cooldownTime;
+        if (now < expirationTime) {
+          const timeLeft = Math.ceil((expirationTime - now) / 1000);
+          const minutes = Math.floor(timeLeft / 60);
+          const seconds = timeLeft % 60;
+          const cdEmbed = new EmbedBuilder()
+            .setColor(0xFFCC00)
+            .setTitle('⏳ Спина болит!')
+            .setDescription(`Ты совсем недавно работал на благо Партии. Отдохни ещё **${minutes} мин. ${seconds} сек.** перед новой сменой.`);
+          return await interaction.reply({ embeds: [cdEmbed], flags: 64 });
         }
       }
+
       mineCooldowns.set(userId, now);
 
-      const pickaxe = await getPickaxeData(userId);
+      const eco = await getEco(userId);
+      const pLevel = eco.items.pickaxeLevel || 1;
 
-      if (pickaxe.durability <= 0) {
+      const item = rollMineItem();
+      
+      let earn = Math.floor(Math.random() * (item.yuanMax - item.yuanMin + 1)) + item.yuanMin;
+      const bonusYuan = (pLevel - 1) * 150;
+      earn += bonusYuan;
+
+      if (item.id === 'diamond') {
+        await addCredits(userId, 5000);
+        await addYuan(userId, earn);
+        await cureInjury(userId);
+        await trackShift(userId);
         const embed = new EmbedBuilder()
-          .setColor(0xFF0000)
-          .setTitle('❌ Кирка сломана!')
-          .setDescription('**Критическая прочность!** Копание невозможно.\nИспользуй `/pickaxe` → **Починить**, чтобы восстановить кирку.');
-        return interaction.reply({ embeds: [embed], flags: 64 });
+          .setColor(0xFF00FF)
+          .setTitle('💎 ДЖЕКПОТ ШАХТЫ — Алмаз!')
+          .setDescription(`<@${userId}> добыл чудо Партии, используя **${getPickaxeName(pLevel)}**!\n💎 **Находка:** ${item.name}\n💴 +${earn} юаней ${bonusYuan > 0 ? `(_включая бонус кирок: +${bonusYuan}_)` : ''}\n⭐ +5000 соц. кредитов\n🩹 Все прошлые травмы мгновенно залечены!`);
+        return interaction.reply({ embeds: [embed] });
       }
 
-      const { dmg, newDurability, totalHits } = await damagePickaxe(userId);
-
-      const baseEarn = Math.floor(Math.random() * 101) + 50;
-      const earn     = baseEarn * pickaxe.level;
       await addYuan(userId, earn);
       await trackShift(userId);
 
-      const caseChance = 3 + (pickaxe.level - 1) * 2;
-      let foundCase    = null;
-      if (Math.random() * 100 < caseChance) {
-        const caseKeys = Object.keys(CASES_DB);
-        const caseWeights = { bronze: 50, iron: 30, quantum: 15, singularity: 5 };
-        const totalW = Object.values(caseWeights).reduce((s, x) => s + x, 0);
-        let rng = Math.random() * totalW;
-        for (const key of caseKeys) {
-          rng -= caseWeights[key] || 0;
-          if (rng <= 0) { foundCase = key; break; }
-        }
+      const reducedInjuryChance = Math.max(0, item.injuryChance - (pLevel - 1) * 5);
+
+      if (reducedInjuryChance > 0 && Math.random() * 100 < reducedInjuryChance) {
+        await setInjury(userId, INJURY_MS);
+        const embed = new EmbedBuilder()
+          .setColor(0xFF4500)
+          .setTitle(`⛏️ Шахтёр — ${item.name} (Травма кровью)`)
+          .setDescription(`<@${userId}> махал киркой и добыл ${item.name}, но обвалился потолок!\n💴 +${earn} юаней\n🩹 Отправлен в медпункт на: **${formatTime(INJURY_MS)}**\n_Подсказка: Улучшай кирку, чтобы снизить шанс обвала!_`);
+        return interaction.reply({ embeds: [embed] });
       }
-
-      let achMsg = '';
-      if (totalHits >= 100) {
-        const ach = await giveAchievement(userId, 'mine_master');
-        if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
-      }
-
-      let durWarning = '';
-      if (newDurability <= 10 && newDurability > 0) durWarning = '\n⚠️ **Кирка почти сломана! Почини её в `/pickaxe`!**';
-      if (newDurability <= 0) durWarning = '\n❌ **Кирка сломана! Необходимо починить в `/pickaxe`!**';
-
-      let caseMsg = '';
-      if (foundCase) {
-        await addHardwareItem(userId, `case_${foundCase}`, 1);
-        caseMsg = `\n📦 **Найден кейс:** ${CASES_DB[foundCase].name}! (откройте в \`/case\`)`;
-      }
-
-      const embed = new EmbedBuilder()
-        .setColor(newDurability <= 10 ? 0xFF4500 : 0x507d91)
-        .setTitle('⛏️ Удар в шахте!')
-        .setDescription(
-          `Ты ударил киркой и добыл ресурсы для Партии!\n\n` +
-          `💴 **+${earn} юаней** (ур. ${pickaxe.level} × ${baseEarn})\n` +
-          `🔧 Прочность кирки: **${durabilityBar(Math.max(0, newDurability), pickaxe.max_durability)}**\n` +
-          `_(потеряно ${dmg} ед. прочности)_` +
-          durWarning + caseMsg + achMsg
-        );
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (interaction.commandName === 'pickaxe') {
-      const pickaxe   = await getPickaxeData(userId);
-      const eco       = await getEco(userId);
-      const repairInfo = await repairPickaxe(userId);
-      const upgradeInfo = await upgradePickaxe(userId);
-
-      const durBar = durabilityBar(pickaxe.durability, pickaxe.max_durability);
-      const statusBlock = [
-        '```',
-        `Уровень      : ${pickaxe.level}  (${getPickaxeName(pickaxe.level)})`,
-        `Прочность    : ${durBar}`,
-        `Всего ударов : ${pickaxe.total_hits}`,
-        `Баланс       : ${eco.wallet} юаней`,
-        '```',
-      ].join('\n');
-
-      let repairLabel, repairDesc;
-      if (repairInfo.alreadyFull) {
-        repairLabel = '🔧 Починить (не нужно)';
-        repairDesc  = 'Прочность и так максимальная!';
-      } else {
-        repairLabel = `🔧 Починить (${repairInfo.cost} ¥)`;
-        repairDesc  = `Восстановит ${repairInfo.lostDurability} ед. прочности за **${repairInfo.cost} юаней**`;
-      }
-
-      const upgradeLabel = `⬆️ Улучшить ур.${pickaxe.level}→${pickaxe.level + 1} (${upgradeInfo.cost} ¥)`;
-      const upgradeDesc  = `Повысит базовый доход с \`/mine\` и снизит шанс травмы`;
-
-      const embed = new EmbedBuilder()
-        .setColor(pickaxe.durability <= 10 ? 0xFF4500 : 0x507d91)
-        .setTitle('🔧 Состояние кирки')
-        .setDescription(statusBlock + `\n**Починка:** ${repairDesc}\n**Улучшение:** ${upgradeDesc}`);
-
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`pickaxe_repair_${userId}`)
-          .setLabel(repairLabel)
-          .setStyle(repairInfo.alreadyFull ? ButtonStyle.Secondary : ButtonStyle.Primary)
-          .setDisabled(repairInfo.alreadyFull),
-        new ButtonBuilder()
-          .setCustomId(`pickaxe_upgrade_${userId}`)
-          .setLabel(upgradeLabel)
-          .setStyle(ButtonStyle.Success),
-      );
-
-      return interaction.reply({ embeds: [embed], components: [row] });
-    }
-
-    if (interaction.commandName === 'case') {
-      const eco = await getEco(userId);
-
-      const caseList = Object.values(CASES_DB).map(c => {
-        const poolDesc = c.pool.map(e => {
-          const meta = ITEMS_DB[e.itemId];
-          const total = c.pool.reduce((s, x) => s + x.chance, 0);
-          const pct = ((e.chance / total) * 100).toFixed(1);
-          return `  ${pct.padStart(5)}%  ${meta?.name || e.itemId}`;
-        }).join('\n');
-        return { caseData: c, poolDesc };
-      });
-
-      const embed = new EmbedBuilder()
-        .setColor(0xFFD700)
-        .setTitle('📦 Кейсы Партийного Оборудования')
-        .setDescription(`Твой баланс: **${eco.wallet} юаней**\nНажми кнопку, чтобы открыть кейс сразу!`);
-
-      for (const { caseData, poolDesc } of caseList) {
-        embed.addFields({
-          name: `${caseData.name} — ${caseData.price} ¥`,
-          value: `\`\`\`\n${poolDesc}\n\`\`\``,
-          inline: false,
-        });
-      }
-
-      const row = new ActionRowBuilder().addComponents(
-        ...Object.values(CASES_DB).map(c =>
-          new ButtonBuilder()
-            .setCustomId(`case_open_${c.id}_${userId}`)
-            .setLabel(`${c.emoji} ${c.name.replace(/\p{Emoji}/gu, '').trim()} (${c.price}¥)`)
-            .setStyle(ButtonStyle.Primary)
-        )
-      );
-
-      return interaction.reply({ embeds: [embed], components: [row] });
-    }
-
-    if (interaction.commandName === 'inv') {
-      const targetUser = interaction.options.getUser('user') || interaction.user;
-      const items = await getHardwareInventory(targetUser.id);
-
-      const table = buildInventoryTable(items);
-      const totalPower = items.reduce((s, { meta, qty }) => s + meta.power * qty, 0);
 
       const embed = new EmbedBuilder()
         .setColor(0x507d91)
-        .setTitle(`🗂️ Инвентарь: ${targetUser.username}`)
-        .setDescription(table)
-        .addFields({ name: '⚡ Суммарная вычислительная мощность', value: `**${totalPower}** ед.`, inline: false })
-        .setFooter({ text: `Предметов типов: ${items.length} | /ah_sell item_id price — выставить на аукцион` });
+        .setTitle('⛏️ Результаты выработки на Шахте')
+        .setDescription(`<@${userId}> усердно трудился в забое с помощью **${getPickaxeName(pLevel)}**!\n📦 **Ресурс:** ${item.name}\n💴 +${earn} юаней ${bonusYuan > 0 ? `(_Бонус кирок: +${bonusYuan}_)` : ''}`);
       return interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'ah') {
-      const lots = await getActiveAuctions();
-      const table = buildAuctionTable(lots);
+    // ── /case (Партийный Кейс) ──────────────────────────────
+    else if (interaction.commandName === 'case') {
+      const casePrice = 500; 
+      const eco = await getEco(userId);
 
-      const embed = new EmbedBuilder()
-        .setColor(0xFFD700)
-        .setTitle('🏪 Партийный Аукцион')
-        .setDescription(table)
-        .addFields({
-          name: '📖 Как пользоваться',
-          value: '```\n/ah_sell item_id price   — выставить предмет\n/ah_buy lot_id           — купить (ID лота 6 символов)\n/ah_cancel lot_id        — снять свой лот\n```',
-          inline: false,
-        })
-        .setFooter({ text: `Активных лотов: ${lots.length} | Налог продавца: 2%` });
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (interaction.commandName === 'ah_sell') {
-      const itemId   = interaction.options.getString('item_id').toLowerCase().trim();
-      const price    = interaction.options.getInteger('price');
-      const quantity = interaction.options.getInteger('quantity') || 1;
-
-      if (price <= 0)    return interaction.reply({ content: '❌ Цена должна быть больше 0!', flags: 64 });
-      if (quantity <= 0) return interaction.reply({ content: '❌ Количество должно быть больше 0!', flags: 64 });
-
-      const meta = ITEMS_DB[itemId];
-      if (!meta) return interaction.reply({ content: `❌ Предмет \`${itemId}\` не найден в базе данных! Проверь ID в \`/inv\`.`, flags: 64 });
-
-      const player = await getPlayer(userId);
-      const have   = player.hardware_inventory.get(itemId) || 0;
-      if (have < quantity) return interaction.reply({ content: `❌ У тебя только **${have}** ед. **${meta.name}**!`, flags: 64 });
-
-      const removed = await removeHardwareItem(userId, itemId, quantity);
-      if (!removed) return interaction.reply({ content: '❌ Ошибка при изъятии предмета из инвентаря.', flags: 64 });
-
-      const lot = await createAuction(userId, itemId, quantity, price);
-      const tax = Math.ceil(price * 0.02);
-
-      const embed = new EmbedBuilder()
-        .setColor(0x00FF88)
-        .setTitle('📤 Лот выставлен на аукцион!')
-        .setDescription([
-          '```',
-          `ID лота   : ${lot.lotId}`,
-          `Предмет   : ${meta.name}`,
-          `Кол-во    : ${quantity}`,
-          `Цена      : ${price} юаней`,
-          `Налог     : ${tax} юаней (2% с продавца)`,
-          `Вы получите: ${price - tax} юаней при продаже`,
-          '```',
-          `Другие игроки могут купить командой \`/ah_buy ${lot.lotId}\``,
-        ].join('\n'));
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (interaction.commandName === 'ah_buy') {
-      const lotId = interaction.options.getString('lot_id').toUpperCase().trim();
-      const result = await buyAuction(lotId, userId);
-
-      if (result.error) return interaction.reply({ content: `❌ ${result.error}`, flags: 64 });
-
-      const meta = ITEMS_DB[result.lot.itemId];
-      const embed = new EmbedBuilder()
-        .setColor(0x00FF88)
-        .setTitle('✅ Покупка совершена!')
-        .setDescription([
-          '```',
-          `Лот       : ${lotId}`,
-          `Предмет   : ${meta?.name || result.lot.itemId}`,
-          `Кол-во    : ${result.lot.quantity}`,
-          `Цена      : ${result.lot.price} юаней`,
-          `Налог     : ${result.tax} юаней (уплачен продавцом)`,
-          '```',
-          `Предмет добавлен в твой инвентарь. Проверь \`/inv\`.`,
-        ].join('\n'));
-
-      const ach = await giveAchievement(userId, 'trader');
-      if (ach) embed.addFields({ name: '🏅 Новое достижение', value: `${ach.name} (+${ach.reward} кредитов)` });
-
-      return interaction.reply({ embeds: [embed] });
-    }
-
-    if (interaction.commandName === 'ah_cancel') {
-      const lotId  = interaction.options.getString('lot_id').toUpperCase().trim();
-      const result = await cancelAuction(lotId, userId);
-      if (result.error) return interaction.reply({ content: `❌ ${result.error}`, flags: 64 });
-      return interaction.reply({ content: `✅ Лот **${lotId}** снят с аукциона. Предмет возвращён в инвентарь.`, flags: 64 });
-    }
-
-    if (interaction.commandName === 'trade') {
-      const targetUser = interaction.options.getUser('user');
-      const itemId     = interaction.options.getString('item_id').toLowerCase().trim();
-      const price      = interaction.options.getInteger('price');
-      const quantity   = interaction.options.getInteger('quantity') || 1;
-
-      if (targetUser.id === userId) return interaction.reply({ content: '❌ Нельзя торговать с самим собой!', flags: 64 });
-      if (price <= 0) return interaction.reply({ content: '❌ Цена должна быть больше 0!', flags: 64 });
-
-      const meta   = ITEMS_DB[itemId];
-      if (!meta) return interaction.reply({ content: `❌ Предмет \`${itemId}\` не найден!`, flags: 64 });
-
-      const seller = await getPlayer(userId);
-      const have   = seller.hardware_inventory.get(itemId) || 0;
-      if (have < quantity) return interaction.reply({ content: `❌ У тебя только **${have}** ед. **${meta.name}**!`, flags: 64 });
-
-      const buyerEco = await getEco(targetUser.id);
-      if (buyerEco.wallet < price) {
-        return interaction.reply({ content: `❌ У **${targetUser.username}** недостаточно юаней (нужно ${price}, есть ${buyerEco.wallet})!`, flags: 64 });
+      if (eco.wallet < casePrice) {
+        return await interaction.reply({ 
+          content: `❌ У тебя недостаточно юаней для покупки кейса! Нужно **${casePrice} 💴**, а у тебя только **${eco.wallet} 💴**.`, 
+          flags: 64 
+        });
       }
 
-      const embed = new EmbedBuilder()
-        .setColor(0xFFA500)
-        .setTitle('🤝 Предложение обмена')
-        .setDescription([
-          `**${interaction.user.username}** предлагает **${targetUser.username}**:`,
-          '```',
-          `Предмет : ${meta.name}`,
-          `Кол-во  : ${quantity}`,
-          `Цена    : ${price} юаней`,
-          '```',
-          `<@${targetUser.id}>, ты принимаешь сделку? (60 секунд)`,
-        ].join('\n'));
+      await addYuan(userId, -casePrice);
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`trade_accept_${userId}_${targetUser.id}_${itemId}_${quantity}_${price}`).setLabel('✅ Принять').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`trade_decline_${userId}_${targetUser.id}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger),
-      );
+      const drops = [
+        { name: '📉 Минус-коробка (Упс!)', chance: 0.15, action: async () => { await addCredits(userId, -200); return 'Партия разочарована! **-200 соц. кредитов**'; } },
+        { name: '🌾 Пачка риса', chance: 0.45, action: async () => { await addCredits(userId, 150); await addYuan(userId, 50); return 'Обычный обед рабочего. **+150 соц. кредитов** и **+50 юаней**'; } },
+        { name: '🐱 Кошко-жена', chance: 0.25, action: async () => { await addCredits(userId, 600); return 'Партия выдала тебе кошко-жену! **+600 соц. кредитов**'; } },
+        { name: '🏎️ Новенький Чанъа́нь Циюа́нь', chance: 0.12, action: async () => { await addCredits(userId, 1500); await addYuan(userId, 300); return 'Ударный труд вознагражден! **+1500 соц. кредитов** и **+300 юаней**'; } },
+        { name: '👑 Фотография Мао Цзэдуна', chance: 0.03, action: async () => { await addCredits(userId, 5000); return 'ВЕЛИЧАЙШАЯ НАГРАДА! Вы нашли портрет Вождя! **+5000 соц. кредитов!**'; } }
+      ];
 
-      const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+      const roll = Math.random();
+      let selectedDrop = drops[0];
+      let currentWeight = 0;
 
-      setTimeout(async () => {
-        try { await msg.edit({ components: [] }); } catch { }
-      }, 60000);
+      for (const drop of drops) {
+        currentWeight += drop.chance;
+        if (roll <= currentWeight) { selectedDrop = drop; break; }
+      }
+
+      const resultText = await selectedDrop.action();
+      const caseEmbed = new EmbedBuilder()
+        .setColor(0xFFD700)
+        .setTitle('📦 Открытие Секретного Ящика')
+        .setDescription(`<@${userId}> инвестировал **${casePrice} юаней** в Партийный Кейс...\n\n🎁 **Предмет:** ${selectedDrop.name}\n\n**Эффект:** ${resultText}`);
+      await interaction.reply({ embeds: [caseEmbed] });
     }
 
-    if (interaction.commandName === 'vote_v2_0') {
+    // ── /vote_v2_0 ──────────────────────────────────────────
+    else if (interaction.commandName === 'vote_v2_0') {
       const cd = await checkCooldown(userId, 'voteCooldown', VOTE_COOLDOWN_MS);
       if (!cd.allowed) return interaction.reply({ content: `⏳ Следующий народный суд через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
@@ -814,7 +641,7 @@ client.on('interactionCreate', async interaction => {
         votes.voters.add(i.user.id);
         if (i.customId === 'vote_guilty') votes.guilty++;
         else votes.innocent++;
-        await i.reply({ content: `✅ Голос учтён. Счёт: 👍 ${votes.guilty} — 👎 ${votes.innocent}`, flags: 64 });
+        await i.reply({ content: `✅ Твой голос учтён. Счёт: 👍 ${votes.guilty} — 👎 ${votes.innocent}`, flags: 64 });
       });
 
       collector.on('end', async () => {
@@ -836,28 +663,34 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    if (interaction.commandName === 'profession_v2_0') {
+    // ── /profession_v2_0 ────────────────────────────────────
+    else if (interaction.commandName === 'profession_v2_0') {
       const job  = interaction.options.getString('job');
       const prof = PROFESSIONS[job];
 
       const jailLeft   = await getJailRemaining(userId);
-      if (jailLeft > 0) return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**.`, flags: 64 });
-      const injuryLeft = await getInjuryRemaining(userId);
-      if (injuryLeft > 0) return interaction.reply({ content: `🩹 Ты травмирован! До выздоровления: **${formatTime(injuryLeft)}**.`, flags: 64 });
+      if (jailLeft > 0) return interaction.reply({ content: `🚔 Ты в тюрьме! До освобождения: **${formatTime(jailLeft)}**. Работать нельзя.`, flags: 64 });
 
-      const cd = await checkProfCooldown(userId, job, prof.cooldown);
+      const injuryLeft = await getInjuryRemaining(userId);
+      if (injuryLeft > 0) return interaction.reply({ content: `🩹 Ты травмирован! До выздоровления: **${formatTime(injuryLeft)}**. Работать нельзя.`, flags: 64 });
+
+      const cd = await checkProfCooldown(userId, `prof_${job}`, prof.cooldown);
       if (!cd.allowed) return interaction.reply({ content: `⏳ ${prof.name} — следующая смена через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
       if (job === 'spy' && Math.random() * 100 < prof.riskChance) {
         const term = await sendToJail(userId, JAIL_MIN_MS, JAIL_MAX_MS);
-        const embed = new EmbedBuilder().setColor(0xFF0000).setTitle('🚔 Шпиона поймали!')
-          .setDescription(`Провал миссии! Тебя бросили в тюрьму!\n🚔 Срок: **${formatTime(term)}**`);
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle('🚔 Шпиона поймали!')
+          .setDescription(`Провал миссии! Тебя поймали и бросили в тюрьму!\n🚔 Срок: **${formatTime(term)}**`);
         return interaction.reply({ embeds: [embed] });
       }
 
       if (Math.random() * 100 < prof.riskChance) {
         await addYuan(userId, -prof.riskLoss);
-        const embed = new EmbedBuilder().setColor(0xFF0000).setTitle(`${prof.name} — Провал!`)
+        const embed = new EmbedBuilder()
+          .setColor(0xFF0000)
+          .setTitle(`${prof.name} — Провал!`)
           .setDescription(`Что-то пошло не так...\n💴 -${prof.riskLoss} юаней`);
         return interaction.reply({ embeds: [embed] });
       }
@@ -866,12 +699,15 @@ client.on('interactionCreate', async interaction => {
       await addYuan(userId, earn);
       await trackShift(userId);
 
-      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle(`${prof.name} — Смена выполнена!`)
-        .setDescription(`Отличная работа!\n💴 +${earn} юаней\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
-      return interaction.reply({ embeds: [embed] });
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF88)
+        .setTitle(`${prof.name} — Смена выполнена!`)
+        .setDescription(`Отличная работа, гражданин!\n💴 +${earn} юаней\n⏳ Следующая смена через **${formatTime(prof.cooldown)}**`);
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'activity_v2_0') {
+    // ── /activity_v2_0 ───────────────────────────────────────
+    else if (interaction.commandName === 'activity_v2_0') {
       const cd = await checkCooldown(userId, 'activityCooldown', ACTIVITY_COOLDOWN_MS);
       if (!cd.allowed) return interaction.reply({ content: `⏳ Следующий раз через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
@@ -880,42 +716,51 @@ client.on('interactionCreate', async interaction => {
       const reward = Math.floor(Math.random() * (act.max - act.min + 1)) + act.min;
       await addCredits(userId, reward);
 
-      const embed = new EmbedBuilder().setColor(0x00BFFF).setTitle('👵 Общественная деятельность')
+      const embed = new EmbedBuilder()
+        .setColor(0x00BFFF)
+        .setTitle('👵 Общественная деятельность')
         .setDescription(`${act.name}\n\n⭐ +${reward} соц. кредитов\nПартия ценит твоё усердие!`);
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'workerboard_v2_0') {
-      const mongoose  = require('mongoose');
-      const WorkerDay = mongoose.model('WorkerDay');
+    // ── /workerboard_v2_0 ────────────────────────────────────
+    else if (interaction.commandName === 'workerboard_v2_0') {
+      const WorkerDay = require('mongoose').model('WorkerDay');
       const doc = await WorkerDay.findById('singleton');
       if (!doc || !doc.shifts || doc.shifts.size === 0) {
         return interaction.reply({ content: 'Сегодня ещё никто не отработал смену.', flags: 64 });
       }
-      const entries   = [...doc.shifts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-      const timeLeft  = WORKER_DAY_MS - (Date.now() - (doc.lastReset || Date.now()));
-      const lines     = entries.map(([id, c], i) => `**${i + 1}.** <@${id}> — ${c} смен`).join('\n');
-      const embed     = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Лучшие работники дня')
-        .setDescription(lines).setFooter({ text: `Итоги через ${formatTime(Math.max(timeLeft, 0))}` });
-      return interaction.reply({ embeds: [embed] });
+      const entries = [...doc.shifts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      const timeLeft = WORKER_DAY_MS - (Date.now() - (doc.lastReset || Date.now()));
+      const lines = entries.map(([id, c], i) => `**${i + 1}.** <@${id}> — ${c} смен`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor(0xFFD700)
+        .setTitle('🏆 Лучшие работники дня')
+        .setDescription(lines)
+        .setFooter({ text: `Итоги и премия через ${formatTime(Math.max(timeLeft, 0))}` });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'achievements_v2_0') {
-      const p     = await getPlayer(userId);
+    // ── /achievements_v2_0 ──────────────────────────────────
+    else if (interaction.commandName === 'achievements_v2_0') {
+      const p = await getPlayer(userId);
       const lines = Object.entries(ACHIEVEMENTS_LIST).map(([id, ach]) => {
         const done = p.achievements.includes(id);
         return `${done ? '✅' : '🔒'} **${ach.name}** — ${ach.desc} (+${ach.reward} кред.)`;
       }).join('\n');
 
-      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle(`🏅 Достижения: ${interaction.user.username}`)
+      const embed = new EmbedBuilder()
+        .setColor(0xFFD700)
+        .setTitle(`🏅 Достижения: ${interaction.user.username}`)
         .setDescription(lines || 'Пока нет достижений!')
         .setFooter({ text: `Получено: ${p.achievements.length}/${Object.keys(ACHIEVEMENTS_LIST).length}` });
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'work_v2_0') {
+    // ── /work_v2_0 ──────────────────────────────────────────
+    else if (interaction.commandName === 'work_v2_0') {
       const cd = await checkCooldown(userId, 'workCooldown', WORK_COOLDOWN_MS);
-      if (!cd.allowed) return interaction.reply({ content: `⏳ Следующая смена через **${formatTime(cd.waitMs)}**.`, flags: 64 });
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Ты уже работал! Следующая смена через **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
       const earn = Math.floor(Math.random() * 451) + 50;
       await addYuan(userId, earn);
@@ -924,101 +769,132 @@ client.on('interactionCreate', async interaction => {
       let achMsg = '';
       if (ach) achMsg = `\n\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
 
-      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('🏭 Завод Партии')
+      const embed = new EmbedBuilder()
+        .setColor(0xED2939)
+        .setTitle('🏭 Завод Партии')
         .setDescription(`Ты отработал смену и заработал **${earn} юаней**!\n⏳ Следующая смена через **1 час**.` + achMsg);
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'partyshop_v2_0') {
-      const eco    = await getEco(userId);
+    // ── /partyshop_v2_0 ─────────────────────────────────────
+    else if (interaction.commandName === 'partyshop_v2_0') {
+      const eco = await getEco(userId);
       const pLevel = eco.items.pickaxeLevel || 1;
+      const upgradePrice = pLevel * 5000;
 
-      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('🛒 Магазин и Мастерская Партии')
-        .setDescription(`Снаряжение: **${getPickaxeName(pLevel)}**\n_Новая система кирок: используй \`/pickaxe\`_`)
+      const embed = new EmbedBuilder()
+        .setColor(0xED2939)
+        .setTitle('🛒 Магазин и Мастерская Партии')
+        .setDescription(`Твоё текущее снаряжение: **${getPickaxeName(pLevel)}**`)
         .addFields(
           { name: '🐱 Кошка-жена',  value: '50 000 юаней\n`/buy_v2_0` → cat_wife',  inline: true },
-          { name: '🍚 Миска риса',  value: '5 000 юаней\n`/buy_v2_0` → rice_bowl',  inline: true },
-          { name: '🎟 Лотерея',     value: '1 000 юаней\n`/buy_v2_0` → ticket',     inline: true },
-          { name: '⛏️ Кирка (новая система)', value: 'Используй `/pickaxe` для починки и апгрейда!\nДоход с каждым ударом = базовая сумма × уровень', inline: false },
+          { name: '🍚 Миска риса',  value: '5 000 юаней\n`/buy_v2_0` → rice_bowl',   inline: true },
+          { name: '🎟 Лотерея',     value: '1 000 юаней\n`/buy_v2_0` → ticket',      inline: true },
+          { name: '⛏️ Улучшение кирки', value: `Цена: **${upgradePrice} юаней**\nДает бонус к юаням в \`/mine\` и защищает от травм!\n\n\`/buy_v2_0\` → pickaxe`, inline: false }
         )
-        .setFooter({ text: '/buy_v2_0 для покупок | /case для кейсов оборудования' });
-      return interaction.reply({ embeds: [embed] });
+        .setFooter({ text: 'Используй /buy_v2_0 для совершения покупок' });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'profile_v2_0') {
+    // ── /profile_v2_0 ───────────────────────────────────────
+    else if (interaction.commandName === 'profile_v2_0') {
       const credits    = await getCredits(userId);
       const eco        = await getEco(userId);
       const rating     = getRating(credits);
       const p          = await getPlayer(userId);
       const jailLeft   = await getJailRemaining(userId);
       const injuryLeft = await getInjuryRemaining(userId);
-      const pickaxe    = await getPickaxeData(userId);
-      const invItems   = await getHardwareInventory(userId);
-      const totalPower = invItems.reduce((s, { meta, qty }) => s + meta.power * qty, 0);
+      const pLevel     = eco.items.pickaxeLevel || 1;
 
-      const embed = new EmbedBuilder().setColor(rating.color)
+      const embed = new EmbedBuilder()
+        .setColor(rating.color)
         .setTitle(`🛂 Паспорт гражданина: ${interaction.user.username}`)
         .addFields(
-          { name: '⭐ Соц. рейтинг', value: `${credits}`, inline: true },
-          { name: '💴 Юани',          value: `${eco.wallet}`, inline: true },
-          { name: '🏅 Достижения',    value: `${p.achievements.length}/${Object.keys(ACHIEVEMENTS_LIST).length}`, inline: true },
-          { name: '🏷 Статус',        value: rating.label, inline: false },
-          { name: '⛏️ Кирка',         value: `${getPickaxeName(pickaxe.level)} | Прочность: ${pickaxe.durability}/${pickaxe.max_durability}`, inline: false },
-          { name: '⚡ Мощь железа',   value: `${totalPower} ед. (${invItems.length} типов предметов)`, inline: true },
-          { name: '🐱 Кошка-жена',    value: eco.items.cat_wife ? 'Есть ✅' : 'Нет ❌', inline: true },
-          { name: '🍚 Миски риса',    value: `${eco.items.rice_bowls}`, inline: true },
+          { name: '⭐ Соц. рейтинг',  value: `${credits}`,                                          inline: true },
+          { name: '💴 Юани',           value: `${eco.wallet}`,                                        inline: true },
+          { name: '🏅 Достижения',     value: `${p.achievements.length}/${Object.keys(ACHIEVEMENTS_LIST).length}`, inline: true },
+          { name: '🏷 Статус',         value: rating.label,                                           inline: false },
+          { name: '⛏️ Снаряжение',     value: getPickaxeName(pLevel),                                 inline: true },
+          { name: '🐱 Кошка-жена',     value: eco.items.cat_wife ? 'Есть ✅' : 'Нет ❌',             inline: true },
+          { name: '🍚 Миски риса',     value: `${eco.items.rice_bowls}`,                              inline: true }
         );
-      if (jailLeft > 0)   embed.addFields({ name: '🚔 В тюрьме',   value: `Осталось: ${formatTime(jailLeft)}`, inline: true });
-      if (injuryLeft > 0) embed.addFields({ name: '🩹 На лечении', value: `Осталось: ${formatTime(injuryLeft)}`, inline: true });
-      return interaction.reply({ embeds: [embed] });
+      if (jailLeft > 0)   embed.addFields({ name: '🚔 В тюрьме',    value: `Осталось: ${formatTime(jailLeft)}`,   inline: true });
+      if (injuryLeft > 0) embed.addFields({ name: '🩹 На лечении',  value: `Осталось: ${formatTime(injuryLeft)}`, inline: true });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'buy_v2_0') {
+    // ── /buy_v2_0 ───────────────────────────────────────────
+    else if (interaction.commandName === 'buy_v2_0') {
       const item = interaction.options.getString('item');
       const eco  = await getEco(userId);
 
       if (item === 'cat_wife') {
-        if (eco.wallet < 50000)  return interaction.reply({ content: '❌ Нужно **50 000 юаней**.', flags: 64 });
-        if (eco.items.cat_wife)  return interaction.reply({ content: '❌ У тебя уже есть кошка-жена!', flags: 64 });
-        eco.wallet -= 50000; eco.items.cat_wife = true;
+        if (eco.wallet < 50000)    return interaction.reply({ content: '❌ Недостаточно юаней! Нужно **50 000**.', flags: 64 });
+        if (eco.items.cat_wife)    return interaction.reply({ content: '❌ У тебя уже есть кошка-жена!', flags: 64 });
+        
+        eco.wallet -= 50000;
+        eco.items.cat_wife = true;
         await eco.save();
+
         const ach = await giveAchievement(userId, 'cat_owner');
-        let achMsg = ach ? `\n🏅 ${ach.name} (+${ach.reward} кредитов)` : '';
-        return interaction.reply({ content: `🐱 Поздравляем! Ты купил **кошку-жену**!` + achMsg });
+        let achMsg = '';
+        if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
+        await interaction.reply({ content: `🐱 Поздравляем! Ты купил **кошку-жену**! Партия одобряет!` + achMsg });
 
       } else if (item === 'rice_bowl') {
-        if (eco.wallet < 5000) return interaction.reply({ content: '❌ Нужно **5 000 юаней**.', flags: 64 });
-        eco.wallet -= 5000; eco.items.rice_bowls += 1;
+        if (eco.wallet < 5000) return interaction.reply({ content: '❌ Недостаточно юаней! Нужно **5 000**.', flags: 64 });
+        
+        eco.wallet -= 5000;
+        eco.items.rice_bowls += 1;
         await eco.save();
-        return interaction.reply({ content: `🍚 Куплена **миска риса**! Теперь у тебя **${eco.items.rice_bowls}** мисок.` });
+        await interaction.reply({ content: `🍚 Ты купил **миску риса**! Теперь у тебя **${eco.items.rice_bowls}** мисок.` });
 
       } else if (item === 'ticket') {
-        if (eco.wallet < 1000) return interaction.reply({ content: '❌ Нужно **1 000 юаней**.', flags: 64 });
+        if (eco.wallet < 1000) return interaction.reply({ content: '❌ Недостаточно юаней! Нужно **1 000**.', flags: 64 });
+        
         eco.wallet -= 1000;
         await eco.save();
+
         const win = Math.random();
         let result;
-        if (win < 0.05)      { await addYuan(userId, 20000); result = '🎉 ДЖЕКПОТ! +20 000 юаней!'; }
-        else if (win < 0.25) { await addYuan(userId, 3000);  result = '🎊 Выигрыш! +3 000 юаней!'; }
-        else                 { result = '😢 Не повезло. Лотерея забрала 1 000 юаней.'; }
+        if (win < 0.05)       { await addYuan(userId, 20000); result = '🎉 ДЖЕКПОТ! +20 000 юаней!'; }
+        else if (win < 0.25)  { await addYuan(userId, 3000);  result = '🎊 Выигрыш! +3 000 юаней!'; }
+        else                  { result = '😢 Не повезло. Лотерея забрала твои 1 000 юаней.'; }
+
         const count = await incLotteryCount(userId);
         let achMsg = '';
-        if (count >= 5) { const ach = await giveAchievement(userId, 'gambler'); if (ach) achMsg = `\n🏅 ${ach.name} (+${ach.reward} кредитов)`; }
-        return interaction.reply({ content: `🎟 **Лотерея:** ${result}` + achMsg });
+        if (count >= 5) {
+          const ach = await giveAchievement(userId, 'gambler');
+          if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
+        }
+        await interaction.reply({ content: `🎟 **Лотерея:** ${result}` + achMsg });
 
       } else if (item === 'pickaxe') {
-        return interaction.reply({ content: '🔧 Система кирок обновлена! Используй команду `/pickaxe` для починки и апгрейда.', flags: 64 });
+        const currentLevel = eco.items.pickaxeLevel || 1;
+        const upgradePrice = currentLevel * 5000;
+
+        if (eco.wallet < upgradePrice) {
+          return interaction.reply({ content: `❌ У тебя недостаточно средств! Модернизация стоит **${upgradePrice} юаней**, а твой баланс — **${eco.wallet}**.`, flags: 64 });
+        }
+
+        eco.wallet -= upgradePrice;
+        eco.items.pickaxeLevel = currentLevel + 1;
+        await eco.save();
+
+        const newName = getPickaxeName(eco.items.pickaxeLevel);
+        await interaction.reply({ content: `⛏️ **Успешная модернизация!** Ты обновил инструмент до уровня **${eco.items.pickaxeLevel}** за **${upgradePrice} юаней**.\nНовое снаряжение: **${newName}**! Партия ценит технический прогресс рабочих!` });
       }
     }
 
-    if (interaction.commandName === 'steal_v2_0') {
+    // ── /steal_v2_0 ─────────────────────────────────────────
+    else if (interaction.commandName === 'steal_v2_0') {
       const targetUser = interaction.options.getUser('target');
       const amount     = interaction.options.getInteger('amount');
 
       if (targetUser.id === userId) return interaction.reply({ content: '❌ Нельзя воровать у самого себя!', flags: 64 });
       if (amount <= 0)              return interaction.reply({ content: '❌ Укажи положительную сумму!', flags: 64 });
 
-      const thief    = await getPlayer(userId);
+      const thief = await getPlayer(userId);
       if (thief.credits < 0) return interaction.reply({ content: '❌ Враги народа не могут воровать!', flags: 64 });
 
       const jailLeft = await getJailRemaining(userId);
@@ -1028,14 +904,14 @@ client.on('interactionCreate', async interaction => {
       if (targetEco.wallet < amount) return interaction.reply({ content: `❌ У цели только **${targetEco.wallet} юаней**!`, flags: 64 });
 
       const chance = Math.max(1, Math.floor(5000 / (amount + 150)));
-      const confirmEmbed = new EmbedBuilder().setColor(0xFF4500).setTitle('⚠️ АКТ САБОТАЖА')
-        .setDescription(`Цель: **${targetUser.username}**\nСумма: **${amount} юаней**\nШанс: **${chance}%**\nПровал: **-500 соц. кредитов**`);
-
+      const confirmEmbed = new EmbedBuilder()
+        .setColor(0xFF4500)
+        .setTitle('⚠️ ВНИМАНИЕ: АКТ САБОТАЖА')
+        .setDescription(`Цель: **${targetUser.username}**\nСумма: **${amount} юаней**\nШанс успеха: **${chance}%**\nШтраф при провале: **-500 соц. кредитов**`);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('steal_confirm').setLabel('Рискнуть').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId('steal_cancel').setLabel('Отмена').setStyle(ButtonStyle.Secondary)
       );
-
       const msg = await interaction.reply({ embeds: [confirmEmbed], components: [row], fetchReply: true });
 
       try {
@@ -1059,252 +935,157 @@ client.on('interactionCreate', async interaction => {
           await addYuan(targetUser.id, -amount);
           await addYuan(userId, amount);
           const ach = await giveAchievement(userId, 'thief');
+
           await interaction.editReply({ content: '✅ **Кража совершена...**', embeds: [], components: [] });
 
-          const announceEmbed = new EmbedBuilder().setColor(0x2F3136).setTitle('🕵️ ОГРАБЛЕНИЕ!')
-            .setDescription(`**Неизвестный** похитил **${amount} юаней** у ${targetUser.username}!\nУ вас **10 секунд**, чтобы обвинить кого-то!`);
+          const announceEmbed = new EmbedBuilder()
+            .setColor(0x2F3136)
+            .setTitle('🕵️ ОГРАБЛЕНИЕ!')
+            .setDescription(`**Неизвестный** похитил **${amount} юаней** у ${targetUser.username}!\n\nЛичность вора неизвестна. У вас есть **10 секунд**, чтобы обвинить кого-то!`);
           await channel.send({ embeds: [announceEmbed] });
 
+          const accusations = new Map();
+          try {
+            const collector = channel.createMessageCollector({ filter: m => m.author.bot && m.mentions.users.size > 0, time: 10000 });
+            collector.on('collect', m => {
+              const accused = m.mentions.users.first();
+              if (accused.id !== m.author.id) accusations.set(m.author.id, accused.id);
+            });
+            await new Promise(resolve => collector.on('end', resolve));
+          } catch { }
+
+          let voteText = 'Никто никого не обвинил. Вор гуляет на свободе...';
+          if (accusations.size > 0) {
+            const tally = {};
+            for (const accusedId of accusations.values()) tally[accusedId] = (tally[accusedId] || 0) + 1;
+            const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+            const [suspectId, votes] = sorted[0];
+            const isRight = suspectId === userId;
+            voteText = `Народ считает вором: <@${suspectId}> (${votes} голос${votes === 1 ? '' : 'ов'})\n${isRight ? '🎯 Народ не ошибся!' : '🤷 Но правду никто не узнает.'}`;
+          }
+
+          const voteEmbed = new EmbedBuilder().setColor(0x888888).setTitle('🗳️ Итоги народного расследования').setDescription(voteText);
+          await channel.send({ embeds: [voteEmbed] });
+
           let achMsg = '';
-          if (ach) achMsg = `\n🏅 ${ach.name} (+${ach.reward} кредитов)`;
-          await interaction.followUp({ content: `🎰 **УСПЕХ!** Украдено **${amount} юаней** у ${targetUser.username}!` + achMsg, flags: 64 });
+          if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
+          await interaction.followUp({ content: `🎰 **УСПЕХ!** Ты анонимно украл **${amount} юаней** у ${targetUser.username}!` + achMsg, flags: 64 });
         } else {
           await addCredits(userId, -500);
-          await interaction.editReply({ content: `🎰 **ПРОВАЛ!** Штраф: **-500 соц. кредитов**.`, embeds: [], components: [] });
-          await channel.send({ content: `🚨 ${interaction.user.username} поймали на попытке кражи у ${targetUser.username}!` });
+          await interaction.editReply({ content: `🎰 **ПРОВАЛ!** Тебя поймали! Штраф: **-500 соц. кредитов**.`, embeds: [], components: [] });
+          await channel.send({ content: `🚨 ${interaction.user.username} попался на попытке кражи у ${targetUser.username}!` });
         }
       } catch {
         interaction.editReply({ content: '⏳ Время вышло. Кража отменена.', embeds: [], components: [] }).catch(() => {});
       }
     }
 
-    if (interaction.commandName === 'socialcredit') {
-      if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец!', flags: 64 });
+    // ── /socialcredit ───────────────────────────────────────
+    else if (interaction.commandName === 'socialcredit') {
+      if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец может изменять кредиты!', flags: 64 });
       const targetUser = interaction.options.getUser('user');
       const amount     = interaction.options.getInteger('amount');
-      const cd         = await checkCooldown(userId, 'creditCooldown', CREDIT_CMD_COOLDOWN_MS);
+
+      const cd = await checkCooldown(userId, 'creditCooldown', CREDIT_CMD_COOLDOWN_MS);
       if (!cd.allowed) return interaction.reply({ content: `⏳ Кулдаун! Подожди **${formatTime(cd.waitMs)}**.`, flags: 64 });
 
-      const absAmount  = Math.abs(amount);
+      const absAmount = Math.abs(amount);
       const limitCheck = await checkAndUseLimit(userId, absAmount);
       if (!limitCheck.allowed) return interaction.reply({ content: `❌ Лимит! Осталось: **${limitCheck.remaining}**. Сброс через **${formatTime(limitCheck.resetIn)}**.`, flags: 64 });
 
       const newCredits = await addCredits(targetUser.id, amount);
-      const rating     = getRating(newCredits);
-      const verdict    = getPartyVerdict(newCredits);
+      const rating  = getRating(newCredits);
+      const verdict = getPartyVerdict(newCredits);
+
       if (newCredits >= 20000) await giveAchievement(targetUser.id, 'patriot');
 
-      const embed = new EmbedBuilder().setColor(verdict.color).setTitle(verdict.title)
+      const embed = new EmbedBuilder()
+        .setColor(verdict.color)
+        .setTitle(verdict.title)
         .setDescription(`**${interaction.user.username}** ${amount > 0 ? 'наградил' : 'наказал'} **${targetUser.username}** на **${amount} баллов**.\nНовый рейтинг: **${newCredits}** (${rating.label})\n${verdict.message}`);
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'socialstats') {
+    // ── /socialstats ────────────────────────────────────────
+    else if (interaction.commandName === 'socialstats') {
       const targetUser = interaction.options.getUser('user');
       const credits    = await getCredits(targetUser.id);
       const rating     = getRating(credits);
-      const embed      = new EmbedBuilder().setColor(rating.color).setTitle(`📊 Соц. рейтинг: ${targetUser.username}`)
+
+      const embed = new EmbedBuilder()
+        .setColor(rating.color)
+        .setTitle(`📊 Социальный рейтинг: ${targetUser.username}`)
         .addFields(
           { name: '⭐ Рейтинг', value: `${credits} баллов`, inline: true },
-          { name: '🏷 Статус',  value: rating.label, inline: true }
+          { name: '🏷 Статус',  value: rating.label,         inline: true }
         );
-      if (rating.legend) embed.addFields({ name: '📜 Привилегии / Наказания', value: rating.legend });
-      return interaction.reply({ embeds: [embed] });
+      if (rating.legend) embed.addFields({ name: '📜 Привилегии / Наказания', value: rating.legend, inline: false });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'socialleaderboard') {
+    // ── /socialleaderboard ──────────────────────────────────
+    else if (interaction.commandName === 'socialleaderboard') {
       const top = await getLeaderboard(10);
       if (top.length === 0) return interaction.reply({ content: 'Данных пока нет.', flags: 64 });
       const lines = top.map((p, i) => `**${i + 1}.** <@${p.userId}> — ${p.credits} баллов`).join('\n');
       const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Топ-10 граждан').setDescription(lines);
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     }
 
-    if (interaction.commandName === 'resetall') {
+    // ── /resetall ───────────────────────────────────────────
+    else if (interaction.commandName === 'resetall') {
       if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец!', flags: 64 });
       await resetAll();
-      return interaction.reply({ content: '✅ Все данные сброшены!' });
+      await interaction.reply({ content: '✅ Все данные сброшены!' });
     }
 
-    if (interaction.commandName === 'ask_deepseek') {
+    // ── /ask_deepseek (DeepSeek AI) ─────────────────────────────
+    else if (interaction.commandName === 'ask_deepseek') {
       if (!DEEPSEEK_API_KEY) {
-        return interaction.reply({ content: '❌ DeepSeek API ключ не настроен (`DEEPSEEK_API_KEY`).', flags: 64 });
+        return interaction.reply({ content: '❌ DeepSeek API ключ не настроен! Добавь `DEEPSEEK_API_KEY` в Environment Variables на Render.', flags: 64 });
       }
+
       const question = interaction.options.getString('question');
-      await interaction.deferReply();
+      await interaction.deferReply(); 
+
       try {
-        const answer    = await askDeepSeek(question);
+        const answer = await askDeepSeek(question);
         const truncated = answer.length > 4000 ? answer.slice(0, 3997) + '...' : answer;
-        const embed     = new EmbedBuilder().setColor(0xED2939).setTitle('🤖 Партийный советник отвечает')
+
+        const embed = new EmbedBuilder()
+          .setColor(0xED2939)
+          .setTitle('🤖 Партийный советник отвечает')
           .addFields(
-            { name: '❓ Вопрос', value: question, inline: false },
-            { name: '📜 Ответ',  value: truncated, inline: false }
+            { name: '❓ Вопрос',  value: question, inline: false },
+            { name: '📜 Ответ',   value: truncated, inline: false }
           )
-          .setFooter({ text: `Гражданин ${interaction.user.username} • Powered by DeepSeek` });
-        return interaction.editReply({ embeds: [embed] });
+          .setFooter({ text: `Гражданин ${interaction.user.username} обратился к советнику • Powered by DeepSeek` });
+
+        await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         console.error('DeepSeek ошибка:', err);
-        return interaction.editReply({ content: `❌ Партийный советник недоступен: ${err.message}` });
+        await interaction.editReply({ content: `❌ Партийный советник недоступен: ${err.message}` });
       }
     }
-
-  } // конец Slash Commands
-
-  // ── BUTTON HANDLERS ──────────────────────────────────────
-  if (interaction.isButton()) {
-    const id = interaction.customId;
-
-    if (id.startsWith('pickaxe_repair_')) {
-      const ownerId = id.split('_')[2];
-      if (interaction.user.id !== ownerId) return interaction.reply({ content: '❌ Это не твоя кирка!', flags: 64 });
-
-      const repairInfo = await repairPickaxe(ownerId);
-      if (repairInfo.alreadyFull) return interaction.reply({ content: '✅ Кирка уже в полном состоянии!', flags: 64 });
-
-      const eco = await getEco(ownerId);
-      if (eco.wallet < repairInfo.cost) {
-        return interaction.reply({ content: `❌ Недостаточно юаней! Нужно **${repairInfo.cost}**, у тебя **${eco.wallet}**.`, flags: 64 });
-      }
-
-      await addYuan(ownerId, -repairInfo.cost);
-      await applyRepairPickaxe(ownerId);
-
-      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle('🔧 Кирка починена!')
-        .setDescription(`Прочность восстановлена до **100/${repairInfo.maxDur}**!\n💴 -${repairInfo.cost} юаней`);
-      return interaction.reply({ embeds: [embed], flags: 64 });
+    
+    // Если команда нигде не обработана:
+    else {
+      console.warn(`⚠️ Вызвана неизвесная команда: /${interaction.commandName}`);
+      await interaction.reply({ content: '❌ Ошибка: Код для этой команды не найден на сервере!', flags: 64 });
     }
 
-    if (id.startsWith('pickaxe_upgrade_')) {
-      const ownerId = id.split('_')[2];
-      if (interaction.user.id !== ownerId) return interaction.reply({ content: '❌ Это не твоя кирка!', flags: 64 });
-
-      const upgradeInfo = await upgradePickaxe(ownerId);
-      const eco         = await getEco(ownerId);
-
-      if (eco.wallet < upgradeInfo.cost) {
-        return interaction.reply({ content: `❌ Недостаточно юаней! Нужно **${upgradeInfo.cost}**, у тебя **${eco.wallet}**.`, flags: 64 });
-      }
-
-      await addYuan(ownerId, -upgradeInfo.cost);
-      const result = await applyPickaxeUpgrade(ownerId);
-
-      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('⬆️ Кирка улучшена!')
-        .setDescription([
-          `Уровень: **${upgradeInfo.currentLevel} → ${result.newLevel}**`,
-          `Новое снаряжение: **${getPickaxeName(result.newLevel)}**`,
-          `💴 -${upgradeInfo.cost} юаней`,
-          `\nТеперь каждый удар приносит больше юаней!`,
-        ].join('\n'));
-      return interaction.reply({ embeds: [embed], flags: 64 });
+  } catch (error) {
+    console.error(`❌ ОШИБКА во встроенной команде /${interaction.commandName}:`, error);
+    const errorPayload = { content: 'Произошла ошибка при выполнении команды!', flags: 64 };
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(errorPayload).catch(() => {});
+    } else {
+      await interaction.reply(errorPayload).catch(() => {});
     }
-
-    if (id.startsWith('case_open_')) {
-      const parts   = id.split('_');
-      const caseId  = parts[2];
-      const ownerId = parts[3];
-
-      if (interaction.user.id !== ownerId) return interaction.reply({ content: '❌ Это не твой список!', flags: 64 });
-
-      const caseData = CASES_DB[caseId];
-      if (!caseData) return interaction.reply({ content: '❌ Кейс не найден!', flags: 64 });
-
-      const eco = await getEco(ownerId);
-      if (eco.wallet < caseData.price) {
-        return interaction.reply({ content: `❌ Недостаточно юаней! Нужно **${caseData.price}**, у тебя **${eco.wallet}**.`, flags: 64 });
-      }
-
-      await addYuan(ownerId, -caseData.price);
-      const item = rollCaseItem(caseId);
-      if (!item) return interaction.reply({ content: '❌ Ошибка при открытии кейса.', flags: 64 });
-
-      await addHardwareItem(ownerId, item.id, 1);
-
-      let achMsg = '';
-      if (item.rarity === 'legendary' || item.rarity === 'secret') {
-        const ach = await giveAchievement(ownerId, 'legendary_find');
-        if (ach) achMsg = `\n🏅 **Новое достижение:** ${ach.name} (+${ach.reward} кредитов)`;
-      }
-
-      const rarMeta = RARITY_META[item.rarity];
-      const embed   = new EmbedBuilder()
-        .setColor(
-          item.rarity === 'secret'    ? 0xFF0000 :
-          item.rarity === 'legendary' ? 0xFFD700 :
-          item.rarity === 'epic'      ? 0x9400D3 :
-          item.rarity === 'rare'      ? 0x0070FF : 0x888888
-        )
-        .setTitle(`${caseData.name} — Открытие!`)
-        .setDescription([
-          `💴 -${caseData.price} юаней`,
-          '',
-          `${rarMeta.emoji} **${rarMeta.label}** предмет:`,
-          `**${item.name}**`,
-          `_${item.desc}_`,
-          `⚡ Вычислительная мощность: **${item.power}**`,
-          '',
-          `Предмет добавлен в инвентарь (\`/inv\`)` + achMsg,
-        ].join('\n'));
-      return interaction.reply({ embeds: [embed], flags: 64 });
-    }
-
-    if (id.startsWith('trade_accept_')) {
-      const parts     = id.split('_');
-      const sellerId  = parts[2];
-      const buyerId   = parts[3];
-      const itemId    = parts[4];
-      const quantity  = parseInt(parts[5], 10);
-      const price     = parseInt(parts[6], 10);
-
-      if (interaction.user.id !== buyerId) return interaction.reply({ content: '❌ Это предложение не тебе!', flags: 64 });
-
-      const meta      = ITEMS_DB[itemId];
-      const buyerEco  = await getEco(buyerId);
-      const seller    = await getPlayer(sellerId);
-
-      if (buyerEco.wallet < price) {
-        return interaction.reply({ content: `❌ Недостаточно юаней! Нужно **${price}**, у тебя **${buyerEco.wallet}**.`, flags: 64 });
-      }
-
-      const have = seller.hardware_inventory.get(itemId) || 0;
-      if (have < quantity) {
-        return interaction.reply({ content: `❌ Продавец больше не владеет этим предметом!`, flags: 64 });
-      }
-
-      await removeHardwareItem(sellerId, itemId, quantity);
-      await addHardwareItem(buyerId, itemId, quantity);
-      await addYuan(buyerId, -price);
-      await addYuan(sellerId, price);
-
-      await interaction.update({ components: [] });
-
-      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle('✅ Обмен совершён!')
-        .setDescription([
-          `<@${sellerId}> → <@${buyerId}>`,
-          `Предмет: **${meta?.name || itemId}** × ${quantity}`,
-          `Цена: **${price} юаней**`,
-        ].join('\n'));
-      return interaction.followUp({ embeds: [embed] });
-    }
-
-    if (id.startsWith('trade_decline_')) {
-      const parts    = id.split('_');
-      const sellerId = parts[2];
-      const buyerId  = parts[3];
-
-      if (interaction.user.id !== buyerId && interaction.user.id !== sellerId) {
-        return interaction.reply({ content: '❌ Ты не участник этой сделки!', flags: 64 });
-      }
-
-      await interaction.update({ components: [] });
-      return interaction.followUp({ content: `❌ **${interaction.user.username}** отклонил сделку.` });
-    }
-
-  } // конец Button Handlers
+  }
 });
 
-// ════════════════════════════════════════════════════════════
-// ЗАПУСК БОТА
-// ════════════════════════════════════════════════════════════
+// ── Запуск ───────────────────────────────────────────────────
 async function main() {
   await connectDB();
   await registerCommands().catch(err => console.error('❌ Ошибка регистрации команд:', err));
