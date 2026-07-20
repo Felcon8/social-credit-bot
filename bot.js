@@ -164,9 +164,9 @@ const EXAM_QUESTIONS = [
   { q: 'Какое животное символизирует 2024 год по кит. кал.?', answers: ['дракон', 'ракон'],                                    hint: 'Оно огнедышащее...' },
 ];
 
-// ── Qwen API ─────────────────────────────────────────────────
+// ── Qwen API (via HuggingFace router → Together AI) ──────────
 async function askQwen(prompt) {
-  const response = await fetch('https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct/v1/chat/completions', {
+  const response = await fetch('https://router.huggingface.co/together/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
