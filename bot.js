@@ -31,7 +31,7 @@ const {
 const TOKEN          = process.env.TOKEN;
 const CLIENT_ID      = process.env.CLIENT_ID;
 const GUILD_ID       = process.env.GUILD_ID || '1151160668892975214';
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const OWNER_ID       = '1528109131704176822';
 
 const LIMIT_PER_30MIN          = 10000;
@@ -164,15 +164,18 @@ const EXAM_QUESTIONS = [
   { q: 'Какое животное символизирует 2024 год по кит. кал.?', answers: ['дракон', 'ракон'],                                    hint: 'Оно огнедышащее...' },
 ];
 
-// ── DeepSeek API ─────────────────────────────────────────────
-async function askDeepSeek(prompt) {
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
+// ── Qwen API ─────────────────────────────────────────────────
+async function askQwen(prompt) {
+  const response = await fetch('https://api-inference.huggingface.co/models/Qwen/Qwen2.5-7B-Instruct/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${QWEN_API_KEY}`,
+    },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: 'Qwen/Qwen2.5-7B-Instruct',
       messages: [
-        { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Иногда хвали Партию. Будь немного абсурдным и шуточным. Отвечай на том языке, на котором к тебе обращаются.' },
+        { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным.' },
         { role: 'user', content: prompt },
       ],
       max_tokens: 500,
@@ -180,7 +183,7 @@ async function askDeepSeek(prompt) {
   });
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`DeepSeek API вернул ошибку ${response.status}: ${err}`);
+    throw new Error(`Qwen API вернул ошибку ${response.status}: ${err}`);
   }
   const data = await response.json();
   return data.choices?.[0]?.message?.content || '🤖 Партийный советник молчит...';
@@ -256,7 +259,7 @@ async function registerCommands() {
     new SlashCommandBuilder().setName('workerboard_v2_0').setDescription('Топ работников дня'),
 
     new SlashCommandBuilder()
-      .setName('ask_deepseek').setDescription('Задать вопрос Партийному советнику (AI DeepSeek)')
+      .setName('ask-qwen').setDescription('Задать вопрос Партийному советнику (Qwen AI)')
       .addStringOption(o => o.setName('question').setDescription('Твой вопрос к Партии').setRequired(true).setMaxLength(500)),
 
     // ── НОВЫЕ КОМАНДЫ ───────────────────────────────────────
@@ -369,7 +372,7 @@ client.on('interactionCreate', async interaction => {
           { name: '🥷 Риск',            value: '`/steal_v2_0` — украсть юани', inline: false },
           { name: '👤 Профиль',         value: '`/profile_v2_0` — паспорт\n`/achievements_v2_0` — достижения\n`/workerboard_v2_0` — топ дня\n`/inv` — инвентарь', inline: false },
           { name: '⛏️⚙️ Шахта и торговля', value: mineSection, inline: false },
-          { name: '🤖 AI Советник',     value: '`/ask_deepseek` — DeepSeek AI', inline: false },
+          { name: '🤖 AI Советник',     value: '`/ask-qwen` — Qwen AI', inline: false },
         );
       return interaction.reply({ embeds: [embed] });
     }
@@ -1192,25 +1195,25 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '✅ Все данные сброшены!' });
     }
 
-    // ── /ask_deepseek ───────────────────────────────────────
-    if (interaction.commandName === 'ask_deepseek') {
-      if (!DEEPSEEK_API_KEY) {
-        return interaction.reply({ content: '❌ DeepSeek API ключ не настроен (`DEEPSEEK_API_KEY`).', flags: 64 });
+    // ── /ask-qwen ───────────────────────────────────────────
+    if (interaction.commandName === 'ask-qwen') {
+      if (!QWEN_API_KEY) {
+        return interaction.reply({ content: '❌ Qwen API ключ не настроен (`QWEN_API_KEY`).', flags: 64 });
       }
       const question = interaction.options.getString('question');
       await interaction.deferReply();
       try {
-        const answer    = await askDeepSeek(question);
+        const answer    = await askQwen(question);
         const truncated = answer.length > 4000 ? answer.slice(0, 3997) + '...' : answer;
         const embed     = new EmbedBuilder().setColor(0xED2939).setTitle('🤖 Партийный советник отвечает')
           .addFields(
             { name: '❓ Вопрос', value: question, inline: false },
             { name: '📜 Ответ',  value: truncated, inline: false }
           )
-          .setFooter({ text: `Гражданин ${interaction.user.username} • Powered by DeepSeek` });
+          .setFooter({ text: `Гражданин ${interaction.user.username} • Powered by Qwen AI` });
         return interaction.editReply({ embeds: [embed] });
       } catch (err) {
-        console.error('DeepSeek ошибка:', err);
+        console.error('Qwen ошибка:', err);
         return interaction.editReply({ content: `❌ Партийный советник недоступен: ${err.message}` });
       }
     }
