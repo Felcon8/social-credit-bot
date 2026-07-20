@@ -191,6 +191,10 @@ async function askDeepSeek(prompt) {
 // ════════════════════════════════════════════════════════════
 async function registerCommands() {
   const commands = [
+    new SlashCommandBuilder()
+    .setName('applyupgrade')
+    .setDescription('Установить улучшение')
+    .addStringOption(o => o.setName('upgrade').setDescription('ID улучшения').setRequired(true)),
     // ── Старые ──────────────────────────────────────────────
     new SlashCommandBuilder()
       .setName('socialcredit').setDescription('Добавить или забрать соц. кредиты у пользователя')
@@ -362,7 +366,17 @@ client.on('interactionCreate', async interaction => {
   // SLASH COMMANDS
   // ════════════════════════════════════════════════════════
   if (interaction.isChatInputCommand()) {
-
+    // ── /applyupgrade ───────────────────────────────────────
+    if (interaction.commandName === 'applyupgrade') {
+        const upgradeId = interaction.options.getString('upgrade');
+        try {
+            const result = await applyPickaxeUpgrade(userId, upgradeId);
+            return interaction.reply({ content: `✅ Улучшение **${upgradeId}** успешно установлено!`, ephemeral: true });
+        } catch (err) {
+            return interaction.reply({ content: `❌ Ошибка: ${err.message}`, ephemeral: true });
+        }
+    }
+    
     // ── /help_v2_0 ──────────────────────────────────────────
     if (interaction.commandName === 'help_v2_0') {
       const mineSection = [
