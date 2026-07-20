@@ -175,7 +175,7 @@ async function askQwen(prompt) {
     body: JSON.stringify({
       model: 'Qwen/Qwen2.5-7B-Instruct-Turbo',
       messages: [
-        { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным.' },
+        { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным. Но если тебе в начале всего промта говорят слово серьезно то ты не партийний советник а просто хороший помощник' },
         { role: 'user', content: prompt },
       ],
       max_tokens: 500,
