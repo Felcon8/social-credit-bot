@@ -173,7 +173,7 @@ async function askQwen(prompt) {
       'Authorization': `Bearer ${QWEN_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'Qwen/Qwen2.5-7B-Instruct',
+      model: 'Qwen/Qwen2.5-7B-Instruct-Turbo',
       messages: [
         { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным.' },
         { role: 'user', content: prompt },
