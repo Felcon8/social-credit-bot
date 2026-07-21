@@ -408,6 +408,15 @@ async function registerCommands() {
         o.setName('image').setDescription('Изображение (PNG, JPG, WEBP)').setRequired(true)
       ),
 
+    new SlashCommandBuilder()
+      .setName('ben')
+      .setDescription('🧪 Спросить у Бена предсказание')
+      .addStringOption(o =>
+        o.setName('question')
+         .setDescription('Твой вопрос к Бену')
+         .setRequired(true)
+      ),
+
   ].map(c => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -1157,6 +1166,39 @@ client.on('interactionCreate', async interaction => {
     }
 
 
+    // ── /ben ────────────────────────────────────────────────
+    if (interaction.commandName === 'ben') {
+      const question = interaction.options.getString('question');
+
+      const BEN_PHRASES = [
+        'Э-э-э... нет.',
+        'Хм-м-м... Хо-хо-хо!',
+        'Угх!',
+        'Фе!',
+        'Ха-ха-ха!',
+        '*Бен берёт трубку, тяжело вздыхает и недовольно молчит в ответ.*',
+        '*Бен делает большой глоток из банки с газировкой.*',
+        '*Бен шумно отрыгивает в трубку.*',
+        '*Бен откладывает газету в сторону, смотрит на тебя как на дурака и говорит: «Нет».*',
+        '*Бен загадочно смотрит в хрустальный шар, пожимает плечами и издаёт скептическое: «Угх?»*',
+        '*Бен злобно складывает газету и сбрасывает вызов.*',
+        '*Бен кивает, довольно ухмыляется и издаёт своё фирменное «Хо-хо-хо!»*',
+      ];
+
+      const phrase = BEN_PHRASES[Math.floor(Math.random() * BEN_PHRASES.length)];
+
+      const embed = new EmbedBuilder()
+        .setColor(0x8B4513)
+        .setTitle('📞 Бен отвечает...')
+        .addFields(
+          { name: '❓ Вопрос', value: question, inline: false },
+          { name: '🧓 Ответ Бена', value: phrase, inline: false },
+        )
+        .setFooter({ text: 'My Talking Ben • Партийная линия' });
+
+      return interaction.reply({ embeds: [embed] });
+    }
+
     // ── /to_gif ─────────────────────────────────────────────
     if (interaction.commandName === 'to_gif') {
       const attachment = interaction.options.getAttachment('image');
@@ -1194,17 +1236,7 @@ client.on('interactionCreate', async interaction => {
           .toBuffer();
 
         const file = new AttachmentBuilder(gifBuffer, { name: 'converted.gif' });
-        const embed = new EmbedBuilder()
-          .setColor(0x00BFFF)
-          .setTitle('🎞️ Конвертация завершена!')
-          .setDescription(`**${attachment.name}** → GIF`)
-          .addFields(
-            { name: '📐 Ширина', value: 'до 480px', inline: true },
-            { name: '💾 Размер', value: `${(gifBuffer.length / 1024).toFixed(1)} КБ`, inline: true },
-          )
-          .setFooter({ text: 'Powered by sharp + libvips' });
-
-        return interaction.editReply({ embeds: [embed], files: [file] });
+        return interaction.editReply({ files: [file] });
 
       } catch (err) {
         console.error('/to_gif error:', err);
