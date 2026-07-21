@@ -1,10 +1,12 @@
 'use strict';
 const {
   Client, GatewayIntentBits, REST, Routes,
-  SlashCommandBuilder, EmbedBuilder,
+  SlashCommandBuilder, EmbedBuilder, AttachmentBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
 const http = require('http');
+const https = require('https');
+const { Writable } = require('stream');
 
 const {
   connectDB,
@@ -399,6 +401,10 @@ async function registerCommands() {
       .addStringOption(o => o.setName('item_id').setDescription('ID предмета из твоего инвентаря').setRequired(true))
       .addIntegerOption(o => o.setName('price').setDescription('Цена в юанях').setRequired(true))
       .addIntegerOption(o => o.setName('quantity').setDescription('Количество (по умолчанию 1)').setRequired(false)),
+
+    new SlashCommandBuilder().setName('to_gif').setDescription('🎞️ Превратить прикреплённое фото в GIF файл')
+      .addAttachmentOption(o => o.setName('image').setDescription('Изображение для конвертации в GIF').setRequired(true))
+      .addIntegerOption(o => o.setName('width').setDescription('Ширина GIF (по умолчанию — оригинальная, макс 800)').setRequired(false)),
 
   ].map(c => c.toJSON());
 
@@ -1145,6 +1151,85 @@ client.on('interactionCreate', async interaction => {
           .setFooter({ text: 'Попробуй другую модель или проверь переменные окружения' });
 
         return interaction.editReply({ embeds: [embed] });
+      }
+    }
+
+    // ── /to_gif ─────────────────────────────────────────────
+    if (interaction.commandName === 'to_gif') {
+      const attachment = interaction.options.getAttachment('image');
+      const maxWidth   = Math.min(interaction.options.getInteger('width') || 0, 800);
+
+      // Проверяем, что это изображение
+      const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp'];
+      if (!attachment.contentType || !allowed.some(t => attachment.contentType.startsWith(t.split('/')[0] + '/'))) {
+        return interaction.reply({ content: '❌ Прикрепи изображение (PNG, JPG, WEBP, GIF, BMP)!', flags: 64 });
+      }
+
+      await interaction.deferReply();
+
+      try {
+        // Скачиваем изображение
+        const imageBuffer = await new Promise((resolve, reject) => {
+          const url = new URL(attachment.url);
+          const mod = url.protocol === 'https:' ? https : http;
+          mod.get(attachment.url, (res) => {
+            if (res.statusCode !== 200) return reject(new Error('Ошибка загрузки: ' + res.statusCode));
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          }).on('error', reject);
+        });
+
+        // Конвертируем через sharp (если установлен) или через jimp
+        let gifBuffer;
+        try {
+          const sharp = require('sharp');
+          let pipeline = sharp(imageBuffer);
+          if (maxWidth > 0) pipeline = pipeline.resize({ width: maxWidth, withoutEnlargement: true });
+          gifBuffer = await pipeline.gif().toBuffer();
+        } catch (e) {
+          // sharp недоступен — пробуем jimp
+          const Jimp = require('jimp');
+          let img = await Jimp.read(imageBuffer);
+          if (maxWidth > 0 && img.getWidth() > maxWidth) {
+            img = img.resize(maxWidth, Jimp.AUTO);
+          }
+          // jimp не умеет GIF напрямую — сохраняем как PNG с расширением .gif (фейковый GIF)
+          // Поэтому попробуем через gif-encoder-2
+          const GifEncoder = require('gif-encoder-2');
+          const w = img.getWidth(), h = img.getHeight();
+          const encoder = new GifEncoder(w, h);
+          const buffers = [];
+          encoder.on('data', chunk => buffers.push(chunk));
+          encoder.start();
+          encoder.setDelay(100);
+          encoder.setQuality(10);
+          const pixels = [];
+          img.scan(0, 0, w, h, (x, y, idx) => {
+            pixels.push(img.bitmap.data[idx]);     // R
+            pixels.push(img.bitmap.data[idx + 1]); // G
+            pixels.push(img.bitmap.data[idx + 2]); // B
+            pixels.push(img.bitmap.data[idx + 3]); // A
+          });
+          encoder.addFrame(pixels);
+          encoder.finish();
+          gifBuffer = Buffer.concat(buffers);
+        }
+
+        const file = new AttachmentBuilder(gifBuffer, { name: 'converted.gif' });
+
+        const embed = new EmbedBuilder()
+          .setColor(0x00BFFF)
+          .setTitle('🎞️ Конвертация завершена!')
+          .setDescription()
+          .setFooter({ text:  });
+
+        return interaction.editReply({ embeds: [embed], files: [file] });
+
+      } catch (err) {
+        console.error('/to_gif ошибка:', err);
+        return interaction.editReply({ content:  });
       }
     }
 
