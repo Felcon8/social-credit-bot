@@ -46,8 +46,6 @@ const AI_MODELS = [
   { name: 'Qwen2.5-7B (быстрая, по умолчанию)',       value: 'Qwen/Qwen2.5-7B-Instruct-Turbo'           },
   { name: 'DeepSeek-R1-Distill-Qwen-7B (лёгкий R1)', value: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B'  },
   { name: 'DeepSeek-R1-Distill-Llama-8B (лёгкий R1)',value: 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B' },
-  { name: 'Llama-3.1-8B (Meta, лёгкая)',              value: 'meta-llama/Llama-3.1-8B-Instruct'         },
-  { name: 'Gemma-3-1B (Google, сверхлёгкая)',         value: 'google/gemma-3-1b-it'                     },
 ];
 ];
 const DEFAULT_MODEL = 'Qwen/Qwen2.5-7B-Instruct-Turbo';
