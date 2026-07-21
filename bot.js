@@ -318,11 +318,11 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('ask-ai').setDescription('Запрос к Партийному ИИ (текст / фото / TTS / видео)')
       .addStringOption(o => o.setName('prompt').setDescription('Запрос. Начни с "серьёзно" — без партийного пафоса').setRequired(true).setMaxLength(500))
-      .addStringOption(o => o.setName('mode').setDescription('Тип ответа (по умолчанию: текст)').setRequired(false)
+      .addStringOption(o => o.setName('model').setDescription('Модель (по умолчанию: Qwen2.5-7B)').setRequired(false)
         .addChoices(
-          { name: '💬 Текст',       value: 'text'  },
-          { name: '🖼️ Изображение', value: 'image' },
-          { name: '🔊 Голос',       value: 'tts'   },
+          { name: 'Qwen2.5-7B (быстрая, по умолчанию)',  value: 'Qwen/Qwen2.5-7B-Instruct-Turbo'  },
+          { name: 'Qwen2.5-72B (умная, медленнее)',       value: 'Qwen/Qwen2.5-72B-Instruct-Turbo' },
+          { name: 'DeepSeek-V3 (мощная)',                 value: 'deepseek-ai/DeepSeek-V3'          },
         )),
 
     // ── НОВЫЕ КОМАНДЫ ───────────────────────────────────────
@@ -1265,89 +1265,44 @@ client.on('interactionCreate', async interaction => {
       }
 
       const rawPrompt = interaction.options.getString('prompt');
-      const mode      = interaction.options.getString('mode') || 'text';
+      const model     = interaction.options.getString('model') || 'Qwen/Qwen2.5-7B-Instruct-Turbo';
 
       // Проверяем слово "серьёзно" в начале (без учёта регистра и пробелов)
-      const isSerious = /^серьёзно\b/i.test(rawPrompt.trim());
-      // Для нейронки убираем слово "серьёзно" из запроса если оно есть
+      const isSerious   = /^серьёзно\b/i.test(rawPrompt.trim());
       const cleanPrompt = isSerious ? rawPrompt.trim().replace(/^серьёзно\s*/i, '') : rawPrompt;
 
       await interaction.deferReply();
 
       try {
-        // ── ТЕКСТ ──
-        if (mode === 'text') {
-          // Если серьёзно — чистый запрос без системного промта
-          const messages = isSerious
-            ? [{ role: 'user', content: cleanPrompt }]
-            : [
-                { role: 'system', content: 'Ты партсоветник. Говори с пафосом и соц. абсурдом.' },
-                { role: 'user', content: cleanPrompt },
-              ];
+        const messages = isSerious
+          ? [{ role: 'user', content: cleanPrompt }]
+          : [
+              { role: 'system', content: 'Ты партсоветник. Говори с пафосом и соц. абсурдом.' },
+              { role: 'user', content: cleanPrompt },
+            ];
 
-          const response = await fetch('https://router.huggingface.co/together/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` },
-            body: JSON.stringify({ model: 'Qwen/Qwen2.5-7B-Instruct-Turbo', messages, max_tokens: 500 }),
-          });
-          if (!response.ok) throw new Error(`Qwen API ${response.status}: ${await response.text()}`);
-          const data    = await response.json();
-          const answer  = data.choices?.[0]?.message?.content || '🤖 Советник молчит...';
-          const truncated = answer.length > 4000 ? answer.slice(0, 3997) + '...' : answer;
+        const response = await fetch('https://router.huggingface.co/together/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` },
+          body: JSON.stringify({ model, messages, max_tokens: 500 }),
+        });
+        if (!response.ok) throw new Error(`AI API ${response.status}: ${await response.text()}`);
+        const data      = await response.json();
+        const answer    = data.choices?.[0]?.message?.content || '🤖 Советник молчит...';
+        const truncated = answer.length > 4000 ? answer.slice(0, 3997) + '...' : answer;
 
-          const embed = new EmbedBuilder()
-            .setColor(isSerious ? 0x5865F2 : 0xED2939)
-            .setTitle(isSerious ? '🧠 Ответ ИИ' : '🤖 Партийный советник отвечает')
-            .addFields(
-              { name: '❓ Запрос', value: rawPrompt.length > 1024 ? rawPrompt.slice(0, 1021) + '...' : rawPrompt, inline: false },
-              { name: '📜 Ответ',  value: truncated, inline: false }
-            )
-            .setFooter({ text: `${interaction.user.username} • Qwen2.5-7B${isSerious ? ' • серьёзный режим' : ''}` });
-          return interaction.editReply({ embeds: [embed] });
-        }
+        // Короткое имя модели для футера
+        const modelShort = model.split('/').pop();
 
-        // ── ИЗОБРАЖЕНИЕ ──
-        if (mode === 'image') {
-          await interaction.editReply({ content: '🖼️ Генерирую изображение, подожди...' });
-          const imgBuffer = await generateImage(cleanPrompt);
-          const { AttachmentBuilder } = require('discord.js');
-          const attachment = new AttachmentBuilder(imgBuffer, { name: 'generated.png' });
-          const embed = new EmbedBuilder()
-            .setColor(0x9400D3)
-            .setTitle('🖼️ Партийная Нейросеть нарисовала')
-            .setDescription(`**Запрос:** ${rawPrompt}`)
-            .setImage('attachment://generated.png')
-            .setFooter({ text: `${interaction.user.username} • FLUX.1-schnell` });
-          return interaction.editReply({ content: '', embeds: [embed], files: [attachment] });
-        }
-
-        // ── TTS ──
-        if (mode === 'tts') {
-          await interaction.editReply({ content: '🔊 Генерирую голос, подожди...' });
-          const audioBuffer = await generateTTS(cleanPrompt);
-          const { AttachmentBuilder } = require('discord.js');
-          const attachment = new AttachmentBuilder(audioBuffer, { name: 'voice.wav' });
-          const embed = new EmbedBuilder()
-            .setColor(0x00BFFF)
-            .setTitle('🔊 Голос Партии')
-            .setDescription(`**Текст:** ${rawPrompt}`)
-            .setFooter({ text: `${interaction.user.username} • MMS-TTS` });
-          return interaction.editReply({ content: '', embeds: [embed], files: [attachment] });
-        }
-
-        // ── ВИДЕО ──
-        if (mode === 'video') {
-          await interaction.editReply({ content: '🎬 Генерирую видео, это займёт ~2-3 минуты...' });
-          const videoBuffer = await generateVideo(cleanPrompt);
-          const { AttachmentBuilder } = require('discord.js');
-          const attachment = new AttachmentBuilder(videoBuffer, { name: 'video.mp4' });
-          const embed = new EmbedBuilder()
-            .setColor(0xFF6600)
-            .setTitle('🎬 Партийное Видео готово')
-            .setDescription(`**Запрос:** ${rawPrompt}`)
-            .setFooter({ text: `${interaction.user.username} • Wan2.1-T2V` });
-          return interaction.editReply({ content: '', embeds: [embed], files: [attachment] });
-        }
+        const embed = new EmbedBuilder()
+          .setColor(isSerious ? 0x5865F2 : 0xED2939)
+          .setTitle(isSerious ? '🧠 Ответ ИИ' : '🤖 Партийный советник отвечает')
+          .addFields(
+            { name: '❓ Запрос', value: rawPrompt.length > 1024 ? rawPrompt.slice(0, 1021) + '...' : rawPrompt, inline: false },
+            { name: '📜 Ответ',  value: truncated, inline: false }
+          )
+          .setFooter({ text: `${interaction.user.username} • ${modelShort}${isSerious ? ' • серьёзный режим' : ''}` });
+        return interaction.editReply({ embeds: [embed] });
 
       } catch (err) {
         console.error('ask-ai ошибка:', err);
