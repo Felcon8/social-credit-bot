@@ -1222,14 +1222,14 @@ client.on('interactionCreate', async interaction => {
         const embed = new EmbedBuilder()
           .setColor(0x00BFFF)
           .setTitle('🎞️ Конвертация завершена!')
-          .setDescription()
-          .setFooter({ text:  });
+          .setDescription(`Изображение **${attachment.name}** успешно преобразовано в GIF!`)
+          .setFooter({ text: `Размер: ${(gifBuffer.length / 1024).toFixed(1)} КБ` });
 
         return interaction.editReply({ embeds: [embed], files: [file] });
 
       } catch (err) {
         console.error('/to_gif ошибка:', err);
-        return interaction.editReply({ content:  });
+        return interaction.editReply({ content: `❌ Ошибка при конвертации: \`${err.message}\`\n\n⚠️ Убедись что установлены пакеты: \`npm install sharp\` или \`npm install jimp gif-encoder-2\`` });
       }
     }
 
