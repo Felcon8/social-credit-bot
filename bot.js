@@ -45,10 +45,7 @@ const QWEN_API_KEYS = [
 const AI_MODELS = [
   { name: 'Qwen2.5-7B (быстрая, по умолчанию)',  value: 'Qwen/Qwen2.5-7B-Instruct-Turbo'  },
   { name: 'Qwen2.5-72B (умная, медленнее)',       value: 'Qwen/Qwen2.5-72B-Instruct-Turbo' },
-  { name: 'Qwen2.5-Coder-32B (код)',              value: 'Qwen/Qwen2.5-Coder-32B-Instruct' },
   { name: 'DeepSeek-V3 (мощная)',                 value: 'deepseek-ai/DeepSeek-V3'          },
-  { name: 'Llama-3.3-70B (Meta)',                 value: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
-  { name: 'Mistral-7B (лёгкая)',                  value: 'mistralai/Mistral-7B-Instruct-v0.3' },
 ];
 const DEFAULT_MODEL = 'Qwen/Qwen2.5-7B-Instruct-Turbo';
 
@@ -235,7 +232,7 @@ async function askAI(prompt, model = DEFAULT_MODEL) {
           messages: [
             {
               role: 'system',
-              content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным.',
+              content: 'Ты партсоветник. Говори с пафосом и соц. абсурдом. При слове «серьезно» (или с ошибкой в нем) — отвечай строго без шуток.',
             },
             { role: 'user', content: prompt },
           ],
