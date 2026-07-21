@@ -47,7 +47,6 @@ const AI_MODELS = [
   { name: 'DeepSeek-R1-Distill-Qwen-7B (лёгкий R1)', value: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-7B'  },
   { name: 'DeepSeek-R1-Distill-Llama-8B (лёгкий R1)',value: 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B' },
 ];
-];
 const DEFAULT_MODEL = 'Qwen/Qwen2.5-7B-Instruct-Turbo';
 
 const LIMIT_PER_30MIN          = 10000;
