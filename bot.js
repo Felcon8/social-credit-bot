@@ -6,7 +6,6 @@ const {
 } = require('discord.js');
 const http = require('http');
 const https = require('https');
-const { Writable } = require('stream');
 
 const {
   connectDB,
@@ -402,9 +401,12 @@ async function registerCommands() {
       .addIntegerOption(o => o.setName('price').setDescription('Цена в юанях').setRequired(true))
       .addIntegerOption(o => o.setName('quantity').setDescription('Количество (по умолчанию 1)').setRequired(false)),
 
-    new SlashCommandBuilder().setName('to_gif').setDescription('🎞️ Превратить прикреплённое фото в GIF файл')
-      .addAttachmentOption(o => o.setName('image').setDescription('Изображение для конвертации в GIF').setRequired(true))
-      .addIntegerOption(o => o.setName('width').setDescription('Ширина GIF (по умолчанию — оригинальная, макс 800)').setRequired(false)),
+    new SlashCommandBuilder()
+      .setName('to_gif')
+      .setDescription('🎞️ Превратить изображение в GIF файл')
+      .addAttachmentOption(o =>
+        o.setName('image').setDescription('Изображение (PNG, JPG, WEBP)').setRequired(true)
+      ),
 
   ].map(c => c.toJSON());
 
@@ -1154,23 +1156,28 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
+
     // ── /to_gif ─────────────────────────────────────────────
     if (interaction.commandName === 'to_gif') {
       const attachment = interaction.options.getAttachment('image');
 
-      const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp'];
+      const allowedTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp'];
       if (!attachment.contentType || !allowedTypes.some(t => attachment.contentType.startsWith(t))) {
         return interaction.reply({ content: '❌ Прикрепи изображение (PNG, JPG, WEBP, GIF, BMP)!', flags: 64 });
+      }
+
+      // Если уже GIF — просто отдаём как есть
+      if (attachment.contentType === 'image/gif') {
+        return interaction.reply({ content: '✅ Это уже GIF! Вот он:', files: [attachment.url] });
       }
 
       await interaction.deferReply();
 
       try {
-        // Скачиваем оригинальное изображение
+        // Скачиваем изображение
         const imageBuffer = await new Promise((resolve, reject) => {
-          const url = new URL(attachment.url);
-          const mod = url.protocol === 'https:' ? https : http;
-          mod.get(attachment.url, (res) => {
+          const mod = attachment.url.startsWith('https') ? https : http;
+          mod.get(attachment.url, res => {
             if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
             const chunks = [];
             res.on('data', c => chunks.push(c));
@@ -1179,173 +1186,30 @@ client.on('interactionCreate', async interaction => {
           }).on('error', reject);
         });
 
-        // ── Встроенный LZW GIF-энкодер (без зависимостей) ──────────────
-        // Декодируем PNG/JPG через встроенный Canvas API Node.js 18+
-        // или создаём простой однокадровый GIF вручную
-
-        // Используем @napi-rs/canvas если доступен, иначе canvas
-        let createCanvas, loadImage;
-        try {
-          ({ createCanvas, loadImage } = require('@napi-rs/canvas'));
-        } catch {
-          try {
-            ({ createCanvas, loadImage } = require('canvas'));
-          } catch {
-            // Ни одна canvas-библиотека не найдена — отдаём файл как есть с переименованием
-            const ext = (attachment.contentType || '').includes('gif') ? 'gif' : null;
-            if (ext) {
-              const file = new AttachmentBuilder(imageBuffer, { name: 'converted.gif' });
-              return interaction.editReply({ content: '✅ Файл уже является GIF — отправляю как есть!', files: [file] });
-            }
-            throw new Error('На сервере не установлена библиотека canvas. Добавь в package.json: `"canvas": "^2.11.2"` и сделай редеплой.');
-          }
-        }
-
-        // Рисуем изображение на canvas
-        const img = await loadImage(imageBuffer);
-        const maxW = 480; // ограничение для уменьшения размера GIF
-        let w = img.width;
-        let h = img.height;
-        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
-
-        const canvas = createCanvas(w, h);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        const { data } = ctx.getImageData(0, 0, w, h); // RGBA Uint8ClampedArray
-
-        // ── Самодостаточный GIF89a энкодер ─────────────────────────────
-        function encodeGIF(width, height, rgbaData) {
-          // Квантуем цвета до 256 (простой метод: берём уникальные, усекаем до 256)
-          const palette = [];
-          const colorMap = new Map();
-
-          // Собираем уникальные RGB цвета
-          for (let i = 0; i < rgbaData.length; i += 4) {
-            const key = (rgbaData[i] << 16) | (rgbaData[i+1] << 8) | rgbaData[i+2];
-            if (!colorMap.has(key)) {
-              colorMap.set(key, palette.length);
-              palette.push([rgbaData[i], rgbaData[i+1], rgbaData[i+2]]);
-              if (palette.length === 256) break;
-            }
-          }
-
-          // Дополняем палитру до 256
-          while (palette.length < 256) palette.push([0, 0, 0]);
-
-          // Переиндексируем пиксели
-          const indices = new Uint8Array(width * height);
-          for (let i = 0, p = 0; i < rgbaData.length; i += 4, p++) {
-            const key = (rgbaData[i] << 16) | (rgbaData[i+1] << 8) | rgbaData[i+2];
-            indices[p] = colorMap.get(key) ?? 0;
-          }
-
-          // LZW сжатие
-          function lzwEncode(indexStream, minCodeSize) {
-            const clearCode = 1 << minCodeSize;
-            const eofCode   = clearCode + 1;
-            let codeSize    = minCodeSize + 1;
-            let nextCode    = eofCode + 1;
-            const table     = new Map();
-
-            const out  = [];
-            let buf    = 0;
-            let bufLen = 0;
-
-            function emit(code) {
-              buf |= code << bufLen;
-              bufLen += codeSize;
-              while (bufLen >= 8) { out.push(buf & 0xFF); buf >>= 8; bufLen -= 8; }
-            }
-
-            emit(clearCode);
-            let str = [indexStream[0]];
-
-            for (let i = 1; i < indexStream.length; i++) {
-              const c = indexStream[i];
-              const key = str.join(',') + ',' + c;
-              if (table.has(key)) {
-                str.push(c);
-              } else {
-                const strKey = str.join(',');
-                emit(table.has(strKey) ? table.get(strKey) : str[0]);
-                table.set(key, nextCode++);
-                if (nextCode > (1 << codeSize) && codeSize < 12) codeSize++;
-                if (nextCode >= 4096) {
-                  emit(clearCode);
-                  table.clear();
-                  codeSize  = minCodeSize + 1;
-                  nextCode  = eofCode + 1;
-                }
-                str = [c];
-              }
-            }
-            emit(table.has(str.join(',')) ? table.get(str.join(',')) : str[0]);
-            emit(eofCode);
-            if (bufLen > 0) out.push(buf & 0xFF);
-            return out;
-          }
-
-          // Упаковываем LZW в sub-blocks
-          function packSubBlocks(bytes) {
-            const out = [];
-            for (let i = 0; i < bytes.length; i += 255) {
-              const chunk = bytes.slice(i, i + 255);
-              out.push(chunk.length, ...chunk);
-            }
-            out.push(0); // block terminator
-            return out;
-          }
-
-          const minCode = 8;
-          const lzw     = lzwEncode(indices, minCode);
-          const blocks  = packSubBlocks(lzw);
-
-          // Собираем GIF байты
-          const gif = [];
-          // Header
-          gif.push(0x47,0x49,0x46,0x38,0x39,0x61); // GIF89a
-          // Logical Screen Descriptor
-          gif.push(width & 0xFF, (width >> 8) & 0xFF);
-          gif.push(height & 0xFF, (height >> 8) & 0xFF);
-          gif.push(0xF7); // Global Color Table Flag=1, color resolution=8, sorted=0, size=7 (256 colors)
-          gif.push(0x00); // background color index
-          gif.push(0x00); // pixel aspect ratio
-          // Global Color Table (256 × 3 bytes)
-          for (const [r,g,b] of palette) gif.push(r,g,b);
-          // Image Descriptor
-          gif.push(0x2C);           // Image separator
-          gif.push(0,0, 0,0);      // left, top
-          gif.push(width & 0xFF, (width >> 8) & 0xFF);
-          gif.push(height & 0xFF, (height >> 8) & 0xFF);
-          gif.push(0x00);           // no local color table
-          // Image Data
-          gif.push(minCode);        // LZW minimum code size
-          gif.push(...blocks);
-          // Trailer
-          gif.push(0x3B);
-
-          return Buffer.from(gif);
-        }
-
-        const gifBuffer = encodeGIF(w, h, data);
+        // Конвертируем через sharp (использует libvips — быстро и надёжно)
+        const sharp = require('sharp');
+        const gifBuffer = await sharp(imageBuffer)
+          .resize({ width: 480, withoutEnlargement: true }) // макс 480px по ширине
+          .gif()
+          .toBuffer();
 
         const file = new AttachmentBuilder(gifBuffer, { name: 'converted.gif' });
         const embed = new EmbedBuilder()
           .setColor(0x00BFFF)
           .setTitle('🎞️ Конвертация завершена!')
-          .setDescription(`Изображение **${attachment.name}** преобразовано в GIF!`)
+          .setDescription(`**${attachment.name}** → GIF`)
           .addFields(
-            { name: '📐 Размер', value: `${w}×${h} пикселей`, inline: true },
-            { name: '💾 Файл',   value: `${(gifBuffer.length / 1024).toFixed(1)} КБ`, inline: true },
-          );
+            { name: '📐 Ширина', value: 'до 480px', inline: true },
+            { name: '💾 Размер', value: `${(gifBuffer.length / 1024).toFixed(1)} КБ`, inline: true },
+          )
+          .setFooter({ text: 'Powered by sharp + libvips' });
 
         return interaction.editReply({ embeds: [embed], files: [file] });
 
       } catch (err) {
-        console.error('/to_gif ошибка:', err);
-        const isCanvas = err.message.includes('canvas');
+        console.error('/to_gif error:', err);
         return interaction.editReply({
-          content: `❌ Ошибка: ${err.message}` + (isCanvas ? '' : '\n\nДобавь в **package.json** зависимость `"canvas": "^2.11.2"` и задеплой заново.'),
+          content: `❌ Ошибка конвертации: \`${err.message}\``,
         });
       }
     }
