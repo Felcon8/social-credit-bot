@@ -72,7 +72,7 @@ const WORKER_OF_DAY_BONUS_CREDITS = 2000;
 const WORKER_OF_DAY_BONUS_YUAN    = 1000;
 const MINE_COOLDOWN_MS         = 5 * 1000;
 
-// Keep-alive
+// Keep-alive сервер
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 // ════════════════════════════════════════════════════════════
@@ -335,7 +335,7 @@ const client = new Client({
 
 const mineCooldowns = new Map();
 
-client.on('ready', () => {
+client.on('clientReady', () => {
   console.log(`🤖 Бот запущен как ${client.user.tag}`);
   checkWorkerOfDayReset(client, GUILD_ID, WORKER_DAY_MS, WORKER_OF_DAY_BONUS_CREDITS, WORKER_OF_DAY_BONUS_YUAN).catch(console.error);
   setInterval(
@@ -414,4 +414,481 @@ client.on('interactionCreate', async interaction => {
         '/ah_buy        Купить звание по ID',
         '/ah_cancel     Снять свой лот',
         '/trade         Прямой обмен званием (громкое)',
-        '
+        '```'
+      ].join('\n');
+
+      const embed = new EmbedBuilder()
+        .setColor(0xED2939)
+        .setTitle('📕 Справочник Партии v2.0')
+        .addFields(
+          { name: '💰 Заработок',       value: '`/work_v2_0` — завод\n`/mine` — шахта\n`/profession_v2_0` — профессия\n`/daily_v2_0` — ежедневно', inline: false },
+          { name: '🎮 Развлечения',     value: '`/wheel_v2_0` — колесо\n`/exam_v2_0` — экзамен\n`/case` — кейсы званий\n`/vote_v2_0` — суд', inline: false },
+          { name: '🛒 Магазин',         value: '`/partyshop_v2_0` — товары\n`/buy_v2_0` — купить', inline: false },
+          { name: '👤 Профиль',         value: '`/profile_v2_0` — паспорт\n`/inv` — гардероб званий\n`/achievements_v2_0` — достижения', inline: false },
+          { name: '⛏️⚙️ Звания и рынок', value: mineSection, inline: false },
+          { name: '🤖 AI Советник',     value: '`/ask_ai` — AI советник', inline: false }
+        );
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /daily_v2_0 ─────────────────────────────────────────
+    if (interaction.commandName === 'daily_v2_0') {
+      const cd = await checkCooldown(userId, 'dailyCooldown', DAILY_COOLDOWN_MS);
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Награда через **${formatTime(cd.waitMs)}**.`, flags: EPHEMERAL_SILENT });
+      const reward = 500;
+      const yuan = 300;
+      await addCredits(userId, reward);
+      await addYuan(userId, yuan);
+      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('📦 Ежедневная награда')
+        .setDescription(`⭐ +${reward} соц. кредитов\n💴 +${yuan} юаней\nПартия благодарит за верность!`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /wheel_v2_0 ─────────────────────────────────────────
+    if (interaction.commandName === 'wheel_v2_0') {
+      const cd = await checkCooldown(userId, 'wheelCooldown', WHEEL_COOLDOWN_MS);
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Колесо доступно через **${formatTime(cd.waitMs)}**.`, flags: EPHEMERAL_SILENT });
+
+      await interaction.reply({ content: '🎡 **Колесо крутится...**', flags: SILENT_FLAG });
+      await new Promise(r => setTimeout(r, 1500));
+
+      const winCredits = 500;
+      const winYuan = 200;
+      await addCredits(userId, winCredits);
+      await addYuan(userId, winYuan);
+
+      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle('🎡 Колесо Фортуны')
+        .setDescription(`Вы выиграли:\n⭐ +${winCredits} соц. кредитов\n💴 +${winYuan} юаней`);
+      return interaction.editReply({ content: '', embeds: [embed] });
+    }
+
+    // ── /exam_v2_0 ──────────────────────────────────────────
+    if (interaction.commandName === 'exam_v2_0') {
+      const q = EXAM_QUESTIONS[Math.floor(Math.random() * EXAM_QUESTIONS.length)];
+      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('📚 Партийный экзамен')
+        .setDescription(`**Вопрос:** ${q.q}\n\n_Подсказка: ${q.hint}_\n\nУ вас **60 секунд** — напишите ответ в чат!`);
+      await interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+
+      try {
+        const filter = m => m.author.id === userId;
+        const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
+        const answer  = collected.first().content.toLowerCase().trim();
+        if (q.answers.some(a => answer.includes(a))) {
+          await addCredits(userId, 500);
+          return interaction.followUp({ content: '✅ **Правильно!** +500 соц. кредитов.', flags: SILENT_FLAG });
+        } else {
+          await addCredits(userId, -200);
+          return interaction.followUp({ content: `❌ **Неправильно!** Правильно: ${q.answers[0]}. -200 кредитов.`, flags: SILENT_FLAG });
+        }
+      } catch {
+        return interaction.followUp({ content: '⏰ Время вышло!', flags: SILENT_FLAG });
+      }
+    }
+
+    // ── /mine ───────────────────────────────────────────────
+    if (interaction.commandName === 'mine') {
+      const now = Date.now();
+      if (mineCooldowns.has(userId) && now < mineCooldowns.get(userId) + MINE_COOLDOWN_MS) {
+        return interaction.reply({ content: '⏳ Подождите 5 секунд между ударами!', flags: EPHEMERAL_SILENT });
+      }
+      mineCooldowns.set(userId, now);
+
+      const pickaxe = await getPickaxeData(userId);
+      if (pickaxe.durability <= 0) {
+        return interaction.reply({ content: '❌ Ваша кирка сломана! Почините её через `/pickaxe`.', flags: EPHEMERAL_SILENT });
+      }
+
+      const { dmg, newDurability } = await damagePickaxe(userId);
+      const earn = 100 * pickaxe.level;
+      await addYuan(userId, earn);
+
+      let caseMsg = '';
+      if (Math.random() < 0.15) {
+        const foundCase = 'bronze';
+        await addHardwareItem(userId, `case_${foundCase}`, 1);
+        caseMsg = `\n📦 **Найден кейс со званиями!** (\`/case\`)`;
+      }
+
+      const embed = new EmbedBuilder().setColor(0x507d91).setTitle('⛏️ Удар в шахте!')
+        .setDescription(`Вы добыли руду!\n💴 **+${earn} юаней**\n🔧 Прочность кирки: ${newDurability}/${pickaxe.max_durability}${caseMsg}`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /pickaxe ────────────────────────────────────────────
+    if (interaction.commandName === 'pickaxe') {
+      const pickaxe = await getPickaxeData(userId);
+      const embed = new EmbedBuilder().setColor(0x507d91).setTitle('🔧 Состояние кирки')
+        .setDescription(`Уровень: **${pickaxe.level}**\nПрочность: **${pickaxe.durability}/${pickaxe.max_durability}**`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /case ───────────────────────────────────────────────
+    if (interaction.commandName === 'case') {
+      const eco = await getEco(userId);
+      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('📦 Кейсы Партийных Званий')
+        .setDescription(`Баланс: **${eco.wallet} юаней**\nПолученные звания из кейсов добавляются в ваш гардероб (\`/inv\`).`);
+
+      for (const c of Object.values(CASES_DB)) {
+        embed.addFields({ name: `${c.name} — ${c.price} ¥`, value: `Содержит уникальные звания этой категории`, inline: false });
+      }
+
+      const row = new ActionRowBuilder().addComponents(
+        ...Object.values(CASES_DB).map(c =>
+          new ButtonBuilder().setCustomId(`case_open_${c.id}_${userId}`)
+            .setLabel(`${c.name} (${c.price}¥)`).setStyle(ButtonStyle.Primary)
+        )
+      );
+      return interaction.reply({ embeds: [embed], components: [row], flags: SILENT_FLAG });
+    }
+
+    // ── /inv ────────────────────────────────────────────────
+    if (interaction.commandName === 'inv') {
+      const targetUser = interaction.options.getUser('user') || interaction.user;
+      const items      = await getHardwareInventory(targetUser.id);
+      const table      = buildInventoryTable(items);
+      const activeTitle = equippedTitles.get(targetUser.id) || 'Не выбрано';
+      const userDisplay = getDisplayName(targetUser);
+
+      const embed = new EmbedBuilder().setColor(0x507d91).setTitle(`🗂️ Гардероб званий: ${userDisplay}`)
+        .setDescription(table)
+        .addFields(
+          { name: '👑 Активное звание', value: `**${activeTitle}**`, inline: true },
+          { name: '📊 Типов званий в гардеробе', value: `**${items.length}**`, inline: true }
+        )
+        .setFooter({ text: 'Выберите звание ниже, чтобы надеть его справа от ника' });
+
+      const components = [];
+
+      // Интерактивное меню выбора и надевания звания
+      if (targetUser.id === userId && items.length > 0) {
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`select_title_${userId}`)
+          .setPlaceholder('👑 Выберите звание для надевания...')
+          .addOptions([
+            {
+              label: '❌ Снять активное звание',
+              value: 'none',
+              description: 'Убрать звание возле ника'
+            },
+            ...items.map(({ itemId, meta }) => ({
+              label: meta.name.slice(0, 100),
+              value: itemId,
+              description: `Редкость: ${RARITY_META[meta.rarity]?.label || meta.rarity}`.slice(0, 100)
+            }))
+          ]);
+
+        components.push(new ActionRowBuilder().addComponents(selectMenu));
+      }
+
+      return interaction.reply({ embeds: [embed], components, flags: SILENT_FLAG });
+    }
+
+    // ── /ah ─────────────────────────────────────────────────
+    if (interaction.commandName === 'ah') {
+      const lots  = await getActiveAuctions();
+      const table = buildAuctionTable(lots);
+      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏪 Партийный Аукцион Званий').setDescription(table);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /ah_sell ────────────────────────────────────────────
+    if (interaction.commandName === 'ah_sell') {
+      const itemId   = interaction.options.getString('item_id').toLowerCase().trim();
+      const price    = interaction.options.getInteger('price');
+      const quantity = interaction.options.getInteger('quantity') || 1;
+
+      const meta = ITEMS_DB[itemId];
+      if (!meta) return interaction.reply({ content: '❌ Звание не найдено!', flags: EPHEMERAL_SILENT });
+
+      const removed = await removeHardwareItem(userId, itemId, quantity);
+      if (!removed) return interaction.reply({ content: '❌ У вас нет этого звания в таком количестве!', flags: EPHEMERAL_SILENT });
+
+      const lot = await createAuction(userId, itemId, quantity, price);
+      return interaction.reply({ content: `📤 Звание **${meta.name}** выставлено на аукцион (Лот: ${lot.lotId})!`, flags: SILENT_FLAG });
+    }
+
+    // ── /ah_buy ─────────────────────────────────────────────
+    if (interaction.commandName === 'ah_buy') {
+      const lotId  = interaction.options.getString('lot_id').toUpperCase().trim();
+      const result = await buyAuction(lotId, userId);
+      if (result.error) return interaction.reply({ content: `❌ ${result.error}`, flags: EPHEMERAL_SILENT });
+      return interaction.reply({ content: `✅ Вы успешно приобрели звание с лота **${lotId}**!`, flags: SILENT_FLAG });
+    }
+
+    // ── /ah_cancel ──────────────────────────────────────────
+    if (interaction.commandName === 'ah_cancel') {
+      const lotId  = interaction.options.getString('lot_id').toUpperCase().trim();
+      const result = await cancelAuction(lotId, userId);
+      if (result.error) return interaction.reply({ content: `❌ ${result.error}`, flags: EPHEMERAL_SILENT });
+      return interaction.reply({ content: `✅ Лот **${lotId}** отменен, звание возвращено в гардероб.`, flags: SILENT_FLAG });
+    }
+
+    // ── /trade ──────────────────────────────────────────────
+    if (interaction.commandName === 'trade') {
+      const targetUser = interaction.options.getUser('user');
+      const itemId     = interaction.options.getString('item_id').toLowerCase().trim();
+      const price      = interaction.options.getInteger('price');
+      const quantity   = interaction.options.getInteger('quantity') || 1;
+
+      const meta = ITEMS_DB[itemId];
+      if (!meta) return interaction.reply({ content: '❌ Звание не найдено!', flags: MessageFlags.Ephemeral });
+
+      const embed = new EmbedBuilder().setColor(0xFFA500).setTitle('🤝 Предложение обмена званием')
+        .setDescription(`**${getDisplayName(interaction.user)}** предлагает **${getDisplayName(targetUser)}**:\n\nЗвание: **${meta.name}** × ${quantity}\nЦена: **${price} юаней**`);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`trade_accept_${userId}_${targetUser.id}_${itemId}_${quantity}_${price}`).setLabel('✅ Принять').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`trade_decline_${userId}_${targetUser.id}`).setLabel('❌ Отклонить').setStyle(ButtonStyle.Danger)
+      );
+
+      return interaction.reply({ embeds: [embed], components: [row] });
+    }
+
+    // ── /vote_v2_0 ──────────────────────────────────────────
+    if (interaction.commandName === 'vote_v2_0') {
+      const targetUser = interaction.options.getUser('target');
+      const reason     = interaction.options.getString('reason');
+
+      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('⚖️ НАРОДНЫЙ СУД ПАРТИИ')
+        .setDescription(`Обвиняемый: **${getDisplayName(targetUser)}**\nПричина: ${reason}`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /profession_v2_0 ────────────────────────────────────
+    if (interaction.commandName === 'profession_v2_0') {
+      const job  = interaction.options.getString('job');
+      const prof = PROFESSIONS[job];
+      const earn = Math.floor(Math.random() * (prof.maxPay - prof.minPay + 1)) + prof.minPay;
+      await addYuan(userId, earn);
+
+      const embed = new EmbedBuilder().setColor(0x00FF88).setTitle(`${prof.name} — Смена завершена!`)
+        .setDescription(`Заработано: **+${earn} юаней**`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /activity_v2_0 ──────────────────────────────────────
+    if (interaction.commandName === 'activity_v2_0') {
+      const key    = interaction.options.getString('activity');
+      const act    = ACTIVITIES[key];
+      const reward = 200;
+      await addCredits(userId, reward);
+
+      const embed = new EmbedBuilder().setColor(0x00BFFF).setTitle('👵 Общественная деятельность')
+        .setDescription(`${act.name}\n⭐ **+${reward} соц. кредитов**`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /workerboard_v2_0 ────────────────────────────────────
+    if (interaction.commandName === 'workerboard_v2_0') {
+      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Лучшие работники дня')
+        .setDescription('Список обновляется ежедневно.');
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /achievements_v2_0 ──────────────────────────────────
+    if (interaction.commandName === 'achievements_v2_0') {
+      const p = await getPlayer(userId);
+      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle(`🏅 Достижения: ${getDisplayName(interaction.user)}`)
+        .setDescription(`Получено достижений: ${p.achievements.length}`);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /work_v2_0 ──────────────────────────────────────────
+    if (interaction.commandName === 'work_v2_0') {
+      const cd = await checkCooldown(userId, 'workCooldown', WORK_COOLDOWN_MS);
+      if (!cd.allowed) return interaction.reply({ content: `⏳ Смена через **${formatTime(cd.waitMs)}**.`, flags: EPHEMERAL_SILENT });
+
+      const earn = 300;
+      await addYuan(userId, earn);
+      return interaction.reply({ content: `🏭 Вы отработали смену и получили **${earn} юаней**!`, flags: SILENT_FLAG });
+    }
+
+    // ── /partyshop_v2_0 ─────────────────────────────────────
+    if (interaction.commandName === 'partyshop_v2_0') {
+      const embed = new EmbedBuilder().setColor(0xED2939).setTitle('🛒 Магазин Партии')
+        .addFields(
+          { name: '🐱 Кошка-жена', value: '50 000 юаней (`/buy_v2_0 cat_wife`)', inline: true },
+          { name: '🍚 Миска рис',   value: '5 000 юаней (`/buy_v2_0 rice_bowl`)', inline: true }
+        );
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /profile_v2_0 ───────────────────────────────────────
+    if (interaction.commandName === 'profile_v2_0') {
+      const credits    = await getCredits(userId);
+      const eco        = await getEco(userId);
+      const rating     = getRating(credits);
+      const activeTitle = equippedTitles.get(userId) || 'Не выбрано';
+      const userDisplay = getDisplayName(interaction.user);
+
+      const embed = new EmbedBuilder().setColor(rating.color).setTitle(`🛂 Паспорт гражданина: ${userDisplay}`)
+        .addFields(
+          { name: '👑 Активное звание', value: activeTitle, inline: false },
+          { name: '⭐ Соц. рейтинг', value: `${credits}`, inline: true },
+          { name: '💴 Юани',          value: `${eco.wallet}`, inline: true },
+          { name: '🏷 Статус',        value: rating.label, inline: false }
+        );
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /buy_v2_0 ───────────────────────────────────────────
+    if (interaction.commandName === 'buy_v2_0') {
+      const item = interaction.options.getString('item');
+      if (item === 'cat_wife') {
+        return interaction.reply({ content: '🐱 Вы купили кошку-жену!', flags: SILENT_FLAG });
+      }
+      return interaction.reply({ content: '🍚 Покупка совершена!', flags: SILENT_FLAG });
+    }
+
+    // ── /steal_v2_0 ─────────────────────────────────────────
+    if (interaction.commandName === 'steal_v2_0') {
+      const targetUser = interaction.options.getUser('target');
+      const amount     = interaction.options.getInteger('amount');
+
+      await interaction.reply({ content: '🕵️ **Попытка проникновения...**', flags: SILENT_FLAG });
+      await new Promise(r => setTimeout(r, 2000));
+
+      const success = Math.random() < 0.5;
+      if (success) {
+        await addYuan(targetUser.id, -amount);
+        await addYuan(userId, amount);
+        await interaction.editReply({ content: `🎰 **УСПЕХ!** Украдено ${amount} юаней!` });
+
+        const announceEmbed = new EmbedBuilder().setColor(0xFF0000).setTitle('🚨 ОГРАБЛЕНИЕ!')
+          .setDescription(`**Неизвестный** похитил **${amount} юаней** у ${getDisplayName(targetUser)}!`);
+        return interaction.channel.send({ embeds: [announceEmbed] });
+      } else {
+        await addCredits(userId, -500);
+        return interaction.editReply({ content: '🎰 **ПРОВАЛ!** Штраф -500 соц. кредитов.' });
+      }
+    }
+
+    // ── /socialcredit ───────────────────────────────────────
+    if (interaction.commandName === 'socialcredit') {
+      if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец!', flags: EPHEMERAL_SILENT });
+      const targetUser  = interaction.options.getUser('user');
+      const amount      = interaction.options.getInteger('amount');
+      await addCredits(targetUser.id, amount);
+      return interaction.reply({ content: `✅ Изменен соц. рейтинг ${getDisplayName(targetUser)} на ${amount}.`, flags: SILENT_FLAG });
+    }
+
+    // ── /socialstats ────────────────────────────────────────
+    if (interaction.commandName === 'socialstats') {
+      const targetUser = interaction.options.getUser('user');
+      const credits    = await getCredits(targetUser.id);
+      return interaction.reply({ content: `📊 Соц. рейтинг ${getDisplayName(targetUser)}: ${credits} баллов.`, flags: SILENT_FLAG });
+    }
+
+    // ── /socialleaderboard ──────────────────────────────────
+    if (interaction.commandName === 'socialleaderboard') {
+      const top = await getLeaderboard(10);
+      const lines = top.map((p, i) => `**${i + 1}.** <@${p.userId}> — ${p.credits} баллов`).join('\n');
+      const embed = new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Топ-10 граждан').setDescription(lines);
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    // ── /resetall ───────────────────────────────────────────
+    if (interaction.commandName === 'resetall') {
+      if (userId !== OWNER_ID) return interaction.reply({ content: '❌ Только владелец!', flags: EPHEMERAL_SILENT });
+      await resetAll();
+      return interaction.reply({ content: '✅ Все данные сброшены!', flags: SILENT_FLAG });
+    }
+
+    // ── /ask_ai ─────────────────────────────────────────────
+    if (interaction.commandName === 'ask_ai') {
+      const question = interaction.options.getString('question');
+      const model = interaction.options.getString('model') || DEFAULT_MODEL;
+
+      await interaction.deferReply({ flags: SILENT_FLAG });
+      try {
+        const { text: answer } = await askAI(question, model);
+        const embed = new EmbedBuilder().setColor(0xED2939).setTitle('🤖 Партийный советник')
+          .addFields({ name: '❓ Вопрос', value: question }, { name: '📜 Ответ', value: answer });
+        return interaction.editReply({ embeds: [embed] });
+      } catch (err) {
+        return interaction.editReply({ content: `❌ Ошибка AI: ${err.message}` });
+      }
+    }
+
+    // ── /to_gif ─────────────────────────────────────────────
+    if (interaction.commandName === 'to_gif') {
+      const attachment = interaction.options.getAttachment('image');
+      return interaction.reply({ content: `🎞️ Файл ${attachment.name} обработан!`, flags: SILENT_FLAG });
+    }
+
+  }
+
+  // ════════════════════════════════════════════════════════
+  // ОБРАБОТКА КНОПОК
+  // ════════════════════════════════════════════════════════
+  if (interaction.isButton()) {
+    const id = interaction.customId;
+
+    if (id.startsWith('case_open_')) {
+      const parts   = id.split('_');
+      const caseId  = parts[2];
+      const ownerId = parts[3];
+
+      if (interaction.user.id !== ownerId) {
+        return interaction.reply({ content: '❌ Это не ваш кейс!', flags: EPHEMERAL_SILENT });
+      }
+
+      const caseData = CASES_DB[caseId];
+      const eco = await getEco(ownerId);
+      if (eco.wallet < caseData.price) {
+        return interaction.reply({ content: '❌ Недостаточно юаней!', flags: EPHEMERAL_SILENT });
+      }
+
+      await addYuan(ownerId, -caseData.price);
+      const item = rollCaseItem(caseId);
+      await addHardwareItem(ownerId, item.id, 1);
+
+      const rarMeta = RARITY_META[item.rarity];
+      const embed = new EmbedBuilder().setColor(0xFFD700)
+        .setTitle(`📦 Открыто: ${caseData.name}`)
+        .setDescription(`Вы получили звание:\n\n${rarMeta.emoji} **${item.name}**\n_${item.desc}_\n\nНовое звание добавлено в ваш гардероб (\`/inv\`)!`);
+
+      return interaction.reply({ embeds: [embed], flags: SILENT_FLAG });
+    }
+
+    if (id.startsWith('trade_accept_')) {
+      const parts    = id.split('_');
+      const sellerId = parts[2];
+      const buyerId  = parts[3];
+      const itemId   = parts[4];
+      const quantity = parseInt(parts[5], 10);
+      const price    = parseInt(parts[6], 10);
+
+      if (interaction.user.id !== buyerId) {
+        return interaction.reply({ content: '❌ Это предложение не для вас!', flags: MessageFlags.Ephemeral });
+      }
+
+      await removeHardwareItem(sellerId, itemId, quantity);
+      await addHardwareItem(buyerId, itemId, quantity);
+      await addYuan(buyerId, -price);
+      await addYuan(sellerId, price);
+
+      await interaction.update({ components: [] });
+      return interaction.followUp({ content: '✅ Обмен званием успешно совершен!' });
+    }
+
+    if (id.startsWith('trade_decline_')) {
+      await interaction.update({ components: [] });
+      return interaction.followUp({ content: '❌ Обмен отменен.' });
+    }
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// ЗАПУСК
+// ════════════════════════════════════════════════════════════
+async function main() {
+  await connectDB();
+  await registerCommands().catch(err => console.error('❌ Ошибка регистрации команд:', err));
+  await client.login(TOKEN);
+}
+
+main().catch(err => {
+  console.error('❌ Критическая ошибка запуска:', err);
+  process.exit(1);
+});
