@@ -192,7 +192,7 @@ async function askAI(prompt, model = DEFAULT_MODEL) {
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай на русском языке с пафосом и юмором.' },
+            { role: 'system', content: 'Ты — партийный советник Великой Партии. Отвечай с пафосом, патетикой и в духе socialistic риторики. Будь абсурдным и шуточным.Но если ползователь пишет отвечай серьёзно то ты обрасиваешь шутки и отсвечаешь без шуток.' },
             { role: 'user', content: prompt },
           ],
           max_tokens: 500,
